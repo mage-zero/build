@@ -58,7 +58,7 @@ jobs:
           echo "r2_access_key=$(echo "${RESPONSE}" | jq -r '.r2.access_key')" >> "${GITHUB_OUTPUT}"
           echo "r2_secret_key=$(echo "${RESPONSE}" | jq -r '.r2.secret_key')" >> "${GITHUB_OUTPUT}"
           echo "deploy_url=$(echo "${RESPONSE}" | jq -r '.deploy_url')" >> "${GITHUB_OUTPUT}"
-          echo "php_version=$(echo "${RESPONSE}" | jq -r '.php_version // \"8.2\"')" >> "${GITHUB_OUTPUT}"
+          echo "php_version=$(echo "${RESPONSE}" | jq -r '.php_version // "8.2"')" >> "${GITHUB_OUTPUT}"
         env:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
 
