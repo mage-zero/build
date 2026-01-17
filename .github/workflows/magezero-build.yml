@@ -63,7 +63,8 @@ jobs:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
 
       - name: Log PHP selection
-        run: echo "Requested PHP version: ${{ steps.creds.outputs.php_version }}"
+        run: |
+          echo "Requested PHP version: ${{ steps.creds.outputs.php_version }}"
 
       - name: Setup PHP
         if: ${{ inputs.setup_php }}
