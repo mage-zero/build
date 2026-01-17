@@ -114,7 +114,10 @@ jobs:
       - name: Trigger deployment
         if: ${{ steps.creds.outputs.deploy_url != '' }}
         run: |
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
           curl -fsS -X POST "${DEPLOY_URL}" \
+            -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"artifact\":\"builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}\"}"
         env:
