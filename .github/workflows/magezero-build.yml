@@ -39,9 +39,10 @@ jobs:
       - name: Request upload credentials
         id: creds
         run: |
+          BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -fsS -X POST "${MZ_CONTROL_URL}/v1/build/credentials" \
+          RESPONSE="$(curl -fsS -X POST "${BASE_URL}/v1/build/credentials" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
