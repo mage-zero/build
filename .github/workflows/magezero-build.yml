@@ -88,23 +88,21 @@ jobs:
       - name: Build artifact
         run: |
           ARTIFACT_NAME="build-${GITHUB_REPOSITORY//\//-}-${IMAGE_TAG}.tar.zst"
+          ARTIFACT_PATH="/tmp/${ARTIFACT_NAME}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> "${GITHUB_ENV}"
-          tar -I 'zstd -19' -cf "${ARTIFACT_NAME}" \
-            --warning=no-file-changed \
+          echo "ARTIFACT_PATH=${ARTIFACT_PATH}" >> "${GITHUB_ENV}"
+          tar -I 'zstd -19' -cf "${ARTIFACT_PATH}" \
             --exclude='.git' \
             --exclude='node_modules' \
             --exclude='var/cache' \
             --exclude='var/page_cache' \
-            . || status=$?
-          if [ "${status:-0}" -ne 0 ] && [ "${status}" -ne 1 ]; then
-            exit "${status}"
-          fi
+            .
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
 
       - name: Upload artifact to R2
         run: |
-          aws s3 cp "${ARTIFACT_NAME}" \
+          aws s3 cp "${ARTIFACT_PATH}" \
             "s3://${R2_BUCKET}/builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}" \
             --endpoint-url "${R2_ENDPOINT}"
         env:
