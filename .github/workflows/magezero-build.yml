@@ -69,6 +69,10 @@ jobs:
           php-version: ${{ steps.creds.outputs.php_version }}
           tools: composer:v2
 
+      - name: Verify PHP
+        if: ${{ inputs.setup_php }}
+        run: php -v
+
       - name: Prepare build
         if: ${{ inputs.build_command != '' }}
         run: ${{ inputs.build_command }}
