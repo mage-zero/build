@@ -1,0 +1,102 @@
+name: MageZero Build
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: Image tag or build identifier (used in artifact name).
+        required: false
+        default: ${{ github.sha }}
+        type: string
+      setup_php:
+        description: Install PHP tooling on the runner.
+        required: false
+        default: true
+        type: boolean
+      mz_control_url:
+        description: Base URL for mz-control.
+        required: true
+        type: string
+      build_command:
+        description: Optional build command to prepare the artifact.
+        required: false
+        default: ""
+        type: string
+    secrets:
+      COMPOSER_AUTH:
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Request upload credentials
+        id: creds
+        run: |
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          RESPONSE="$(curl -fsS -X POST "${MZ_CONTROL_URL}/v1/build/credentials" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
+          echo "r2_endpoint=$(echo "${RESPONSE}" | jq -r '.r2.endpoint')" >> "${GITHUB_OUTPUT}"
+          echo "r2_bucket=$(echo "${RESPONSE}" | jq -r '.r2.bucket')" >> "${GITHUB_OUTPUT}"
+          echo "r2_access_key=$(echo "${RESPONSE}" | jq -r '.r2.access_key')" >> "${GITHUB_OUTPUT}"
+          echo "r2_secret_key=$(echo "${RESPONSE}" | jq -r '.r2.secret_key')" >> "${GITHUB_OUTPUT}"
+          echo "deploy_url=$(echo "${RESPONSE}" | jq -r '.deploy_url')" >> "${GITHUB_OUTPUT}"
+          echo "php_version=$(echo "${RESPONSE}" | jq -r '.php_version // \"8.2\"')" >> "${GITHUB_OUTPUT}"
+        env:
+          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+
+      - name: Setup PHP
+        if: ${{ inputs.setup_php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ steps.creds.outputs.php_version }}
+          tools: composer:v2
+
+      - name: Prepare build
+        if: ${{ inputs.build_command != '' }}
+        run: ${{ inputs.build_command }}
+        env:
+          COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
+
+      - name: Build artifact
+        run: |
+          ARTIFACT_NAME="build-${GITHUB_REPOSITORY//\//-}-${IMAGE_TAG}.tar.zst"
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> "${GITHUB_ENV}"
+          tar -I 'zstd -19' -cf "${ARTIFACT_NAME}" \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='var/cache' \
+            --exclude='var/page_cache' \
+            .
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+
+      - name: Upload artifact to R2
+        run: |
+          aws s3 cp "${ARTIFACT_NAME}" \
+            "s3://${R2_BUCKET}/builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}" \
+            --endpoint-url "${R2_ENDPOINT}"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.creds.outputs.r2_access_key }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.creds.outputs.r2_secret_key }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: ${{ steps.creds.outputs.r2_endpoint }}
+          R2_BUCKET: ${{ steps.creds.outputs.r2_bucket }}
+
+      - name: Trigger deployment
+        if: ${{ steps.creds.outputs.deploy_url != '' }}
+        run: |
+          curl -fsS -X POST "${DEPLOY_URL}" \
+            -H "Content-Type: application/json" \
+            -d "{\"artifact\":\"builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}\"}"
+        env:
+          DEPLOY_URL: ${{ steps.creds.outputs.deploy_url }}
