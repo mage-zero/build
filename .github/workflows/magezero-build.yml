@@ -42,10 +42,17 @@ jobs:
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -fsS -X POST "${BASE_URL}/v1/build/credentials" \
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/credentials" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
+          RESPONSE_BODY="${RESPONSE%$'\n'*}"
+          RESPONSE_CODE="${RESPONSE##*$'\n'}"
+          if [ "${RESPONSE_CODE}" -ge 300 ]; then
+            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+            exit 1
+          fi
+          RESPONSE="${RESPONSE_BODY}"
           echo "r2_endpoint=$(echo "${RESPONSE}" | jq -r '.r2.endpoint')" >> "${GITHUB_OUTPUT}"
           echo "r2_bucket=$(echo "${RESPONSE}" | jq -r '.r2.bucket')" >> "${GITHUB_OUTPUT}"
           echo "r2_access_key=$(echo "${RESPONSE}" | jq -r '.r2.access_key')" >> "${GITHUB_OUTPUT}"
