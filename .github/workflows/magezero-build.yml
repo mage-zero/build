@@ -95,7 +95,10 @@ jobs:
             --exclude='node_modules' \
             --exclude='var/cache' \
             --exclude='var/page_cache' \
-            .
+            . || status=$?
+          if [ "${status:-0}" -ne 0 ] && [ "${status}" -ne 1 ]; then
+            exit "${status}"
+          fi
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
 
