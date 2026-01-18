@@ -106,7 +106,7 @@ jobs:
           RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\"}")"
+            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":1800}")"
           RESPONSE_BODY="${RESPONSE%$'\n'*}"
           RESPONSE_CODE="${RESPONSE##*$'\n'}"
           if [ "${RESPONSE_CODE}" -ge 300 ]; then
