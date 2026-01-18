@@ -36,7 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Request upload credentials
+      - name: Request build context
         id: creds
         run: |
           BASE_URL="${MZ_CONTROL_URL%/}"
@@ -53,16 +53,6 @@ jobs:
             exit 1
           fi
           RESPONSE="${RESPONSE_BODY}"
-          R2_ENDPOINT="$(echo "${RESPONSE}" | jq -r '.r2.endpoint')"
-          R2_BUCKET="$(echo "${RESPONSE}" | jq -r '.r2.bucket')"
-          R2_ACCESS_KEY="$(echo "${RESPONSE}" | jq -r '.r2.access_key')"
-          R2_SECRET_KEY="$(echo "${RESPONSE}" | jq -r '.r2.secret_key')"
-          echo "::add-mask::${R2_ACCESS_KEY}"
-          echo "::add-mask::${R2_SECRET_KEY}"
-          echo "r2_endpoint=${R2_ENDPOINT}" >> "${GITHUB_OUTPUT}"
-          echo "r2_bucket=${R2_BUCKET}" >> "${GITHUB_OUTPUT}"
-          echo "r2_access_key=${R2_ACCESS_KEY}" >> "${GITHUB_OUTPUT}"
-          echo "r2_secret_key=${R2_SECRET_KEY}" >> "${GITHUB_OUTPUT}"
           echo "deploy_url=$(echo "${RESPONSE}" | jq -r '.deploy_url')" >> "${GITHUB_OUTPUT}"
           PHP_VERSION="$(printf '%s' "${RESPONSE}" | jq -r '.php_version // "8.2"')"
           echo "php_version=${PHP_VERSION}" >> "${GITHUB_OUTPUT}"
@@ -106,17 +96,38 @@ jobs:
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
 
+      - name: Request upload URL
+        id: presign
+        run: |
+          BASE_URL="${MZ_CONTROL_URL%/}"
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          OBJECT_KEY="builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}"
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\"}")"
+          RESPONSE_BODY="${RESPONSE%$'\n'*}"
+          RESPONSE_CODE="${RESPONSE##*$'\n'}"
+          if [ "${RESPONSE_CODE}" -ge 300 ]; then
+            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+            exit 1
+          fi
+          UPLOAD_URL="$(echo "${RESPONSE_BODY}" | jq -r '.url')"
+          if [ -z "${UPLOAD_URL}" ] || [ "${UPLOAD_URL}" = "null" ]; then
+            echo "mz-control error: missing upload URL"
+            exit 1
+          fi
+          echo "::add-mask::${UPLOAD_URL}"
+          echo "upload_url=${UPLOAD_URL}" >> "${GITHUB_OUTPUT}"
+        env:
+          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+
       - name: Upload artifact to R2
         run: |
-          aws s3 cp "${ARTIFACT_PATH}" \
-            "s3://${R2_BUCKET}/builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}" \
-            --endpoint-url "${R2_ENDPOINT}"
+          curl -fsS -X PUT --upload-file "${ARTIFACT_PATH}" "${UPLOAD_URL}"
         env:
-          AWS_ACCESS_KEY_ID: ${{ steps.creds.outputs.r2_access_key }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.creds.outputs.r2_secret_key }}
-          AWS_DEFAULT_REGION: auto
-          R2_ENDPOINT: ${{ steps.creds.outputs.r2_endpoint }}
-          R2_BUCKET: ${{ steps.creds.outputs.r2_bucket }}
+          UPLOAD_URL: ${{ steps.presign.outputs.upload_url }}
 
       - name: Trigger deployment
         if: ${{ steps.creds.outputs.deploy_url != '' }}
