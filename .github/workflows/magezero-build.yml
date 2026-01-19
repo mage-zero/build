@@ -59,6 +59,32 @@ jobs:
         env:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
 
+      - name: Preflight upload URL
+        run: |
+          BASE_URL="${MZ_CONTROL_URL%/}"
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          ARTIFACT_NAME="build-${GITHUB_REPOSITORY//\//-}-${IMAGE_TAG}.tar.zst"
+          OBJECT_KEY="builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}"
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":60}")"
+          RESPONSE_BODY="${RESPONSE%$'\n'*}"
+          RESPONSE_CODE="${RESPONSE##*$'\n'}"
+          if [ "${RESPONSE_CODE}" -ge 300 ]; then
+            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+            exit 1
+          fi
+          UPLOAD_URL="$(echo "${RESPONSE_BODY}" | jq -r '.url')"
+          if [ -z "${UPLOAD_URL}" ] || [ "${UPLOAD_URL}" = "null" ]; then
+            echo "mz-control error: missing upload URL"
+            exit 1
+          fi
+        env:
+          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+
       - name: Log PHP selection
         run: |
           echo "Requested PHP version: ${{ steps.creds.outputs.php_version }}"
