@@ -113,7 +113,7 @@ jobs:
           ARTIFACT_PATH="/tmp/${ARTIFACT_NAME}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> "${GITHUB_ENV}"
           echo "ARTIFACT_PATH=${ARTIFACT_PATH}" >> "${GITHUB_ENV}"
-          tar -I 'zstd -19' -cf "${ARTIFACT_PATH}" \
+          tar -I 'zstd -10 -T0' -cf "${ARTIFACT_PATH}" \
             --exclude='.git' \
             --exclude='node_modules' \
             --exclude='var/cache' \
