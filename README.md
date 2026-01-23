@@ -23,6 +23,7 @@ Inputs required:
 
 Optional:
 - `COMPOSER_AUTH` (only if you need private Composer repos)
+- `extra_build_command` (project-specific build tweaks; runs before the default build)
 
 ## Example Usage (Customer Repo)
 
@@ -39,15 +40,15 @@ jobs:
     with:
       image_tag: ${{ github.sha }}
       mz_control_url: https://mz-control.magezero.com
-      build_command: |
-        composer install --no-dev --prefer-dist
-        bin/magento setup:di:compile
-        composer dump-autoload --optimize
-        bin/magento setup:static-content:deploy -f
-        # TODO: generate opcache preload file once the script is finalized.
+      extra_build_command: |
+        # Optional project-specific build tweaks.
+        # Runs before the default MageZero build steps.
     secrets:
       COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
 ```
+
+Legacy:
+- `build_command` is still supported but overrides the default MageZero build (not recommended).
 
 ## Storage Notes
 

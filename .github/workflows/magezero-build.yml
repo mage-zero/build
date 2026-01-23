@@ -18,7 +18,12 @@ on:
         required: true
         type: string
       build_command:
-        description: Optional build command to prepare the artifact.
+        description: Legacy build command that replaces the default MageZero build (deprecated).
+        required: false
+        default: ""
+        type: string
+      extra_build_command:
+        description: Optional extra build steps to run before the default MageZero build.
         required: false
         default: ""
         type: string
@@ -101,14 +106,31 @@ jobs:
         if: ${{ inputs.setup_php }}
         run: php -v
 
-      - name: Prepare build
-        if: ${{ inputs.build_command != '' }}
-        run: ${{ inputs.build_command }}
+      - name: Build Magento artifact
+        run: |
+          set -e
+          if [ -n "${LEGACY_BUILD_COMMAND}" ]; then
+            echo "Running legacy build_command override."
+            printf '%s\n' "${LEGACY_BUILD_COMMAND}" > /tmp/mz-build-override.sh
+            . /tmp/mz-build-override.sh
+            exit 0
+          fi
+          if [ -n "${EXTRA_BUILD_COMMAND}" ]; then
+            echo "Running extra build steps."
+            printf '%s\n' "${EXTRA_BUILD_COMMAND}" > /tmp/mz-extra-build.sh
+            . /tmp/mz-extra-build.sh
+          fi
+          composer install --no-dev --prefer-dist
+          bin/magento setup:di:compile
+          composer dump-autoload --optimize
+          bin/magento setup:static-content:deploy -f
         env:
           COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
+          LEGACY_BUILD_COMMAND: ${{ inputs.build_command }}
+          EXTRA_BUILD_COMMAND: ${{ inputs.extra_build_command }}
 
       - name: Generate OPcache preload file
-        if: ${{ inputs.setup_php }}
+        if: ${{ inputs.setup_php && inputs.build_command == '' }}
         run: |
           PRELOAD_PATH="app/opcache-preload.php"
           cat > /tmp/mz-opcache-preload.php <<'PHP'
