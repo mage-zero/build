@@ -107,6 +107,87 @@ jobs:
         env:
           COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
 
+      - name: Generate OPcache preload file
+        if: ${{ inputs.setup_php }}
+        run: |
+          PRELOAD_PATH="var/opcache-preload.php"
+          cat > /tmp/mz-opcache-preload.php <<'PHP'
+          <?php
+          $root = getcwd();
+          $preloadPath = $root . '/var/opcache-preload.php';
+          $files = [];
+          $classmapPath = $root . '/vendor/composer/autoload_classmap.php';
+          if (is_file($classmapPath)) {
+              $classmap = require $classmapPath;
+              if (is_array($classmap)) {
+                  $files = array_values($classmap);
+              }
+          }
+          $scanDirs = [
+              $root . '/app/code',
+              $root . '/generated/code',
+              $root . '/generated/metadata',
+          ];
+          foreach ($scanDirs as $dir) {
+              if (!is_dir($dir)) {
+                  continue;
+              }
+              $iterator = new RecursiveIteratorIterator(
+                  new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
+              );
+              foreach ($iterator as $file) {
+                  if ($file->isFile() && $file->getExtension() === 'php') {
+                      $files[] = $file->getPathname();
+                  }
+              }
+          }
+          $files = array_values(array_unique($files));
+          sort($files);
+          $relative = [];
+          $rootPrefix = $root . DIRECTORY_SEPARATOR;
+          foreach ($files as $file) {
+              $real = realpath($file);
+              if ($real === false) {
+                  continue;
+              }
+              if (strpos($real, $rootPrefix) !== 0) {
+                  continue;
+              }
+              $path = substr($real, strlen($rootPrefix));
+              if ($path === 'var/opcache-preload.php') {
+                  continue;
+              }
+              $relative[] = $path;
+          }
+          $relative = array_values(array_unique($relative));
+          $lines = [
+              '<?php',
+              '// Generated at build time. Do not edit.',
+              'if (!function_exists("opcache_compile_file")) { return; }',
+              '$root = dirname(__DIR__);',
+              '$files = ' . var_export($relative, true) . ';',
+              'foreach ($files as $file) {',
+              '    $path = $root . "/" . $file;',
+              '    if (is_file($path)) {',
+              '        @opcache_compile_file($path);',
+              '    }',
+              '}',
+          ];
+          if (!is_dir(dirname($preloadPath))) {
+              mkdir(dirname($preloadPath), 0775, true);
+          }
+          file_put_contents($preloadPath, implode(PHP_EOL, $lines) . PHP_EOL);
+          PHP
+          if [ -f "vendor/composer/autoload_classmap.php" ]; then
+            php /tmp/mz-opcache-preload.php || true
+          else
+            echo "Skipping preload generation; classmap not available."
+          fi
+          if [ ! -s "${PRELOAD_PATH}" ]; then
+            echo "<?php return;" > "${PRELOAD_PATH}"
+          fi
+          echo "OPcache preload file: ${PRELOAD_PATH}"
+
       - name: Build artifact
         run: |
           ARTIFACT_NAME="build-${GITHUB_REPOSITORY//\//-}-${IMAGE_TAG}.tar.zst"
