@@ -110,11 +110,11 @@ jobs:
       - name: Generate OPcache preload file
         if: ${{ inputs.setup_php }}
         run: |
-          PRELOAD_PATH="app/etc/opcache-preload.php"
+          PRELOAD_PATH="app/opcache-preload.php"
           cat > /tmp/mz-opcache-preload.php <<'PHP'
           <?php
           $root = getcwd();
-          $preloadPath = $root . '/app/etc/opcache-preload.php';
+          $preloadPath = $root . '/app/opcache-preload.php';
           $files = [];
           $classmapPath = $root . '/vendor/composer/autoload_classmap.php';
           if (is_file($classmapPath)) {
@@ -154,7 +154,7 @@ jobs:
                   continue;
               }
               $path = substr($real, strlen($rootPrefix));
-              if ($path === 'app/etc/opcache-preload.php') {
+              if ($path === 'app/opcache-preload.php') {
                 continue;
               }
               $relative[] = $path;
