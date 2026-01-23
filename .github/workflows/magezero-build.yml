@@ -109,6 +109,76 @@ jobs:
       - name: Build Magento artifact
         run: |
           set -e
+          if [ -f app/etc/config.php ]; then
+            cp app/etc/config.php app/etc/config.php.bak
+            trap 'mv app/etc/config.php.bak app/etc/config.php' EXIT
+          fi
+          php -r '
+          $path = "app/etc/config.php";
+          $config = file_exists($path) ? include $path : [];
+          if (!is_array($config)) { $config = []; }
+          if (!isset($config["scopes"])) {
+            $config["scopes"] = [
+              "websites" => [
+                "admin" => [
+                  "website_id" => "0",
+                  "code" => "admin",
+                  "name" => "Admin",
+                  "sort_order" => "0",
+                  "default_group_id" => "0",
+                  "is_default" => "0",
+                ],
+                "base" => [
+                  "website_id" => "1",
+                  "code" => "base",
+                  "name" => "Default",
+                  "sort_order" => "0",
+                  "default_group_id" => "1",
+                  "is_default" => "1",
+                ],
+              ],
+              "stores" => [
+                "admin" => [
+                  "store_id" => "0",
+                  "code" => "admin",
+                  "website_id" => "0",
+                  "group_id" => "0",
+                  "name" => "Admin",
+                  "sort_order" => "0",
+                  "is_active" => "1",
+                ],
+                "default" => [
+                  "store_id" => "1",
+                  "code" => "default",
+                  "website_id" => "1",
+                  "group_id" => "1",
+                  "name" => "Default",
+                  "sort_order" => "1",
+                  "is_active" => "1",
+                ],
+              ],
+              "groups" => [
+                0 => [
+                  "group_id" => "0",
+                  "website_id" => "0",
+                  "name" => "Admin",
+                  "root_category_id" => "0",
+                  "default_store_id" => "0",
+                  "code" => "default",
+                ],
+                1 => [
+                  "group_id" => "1",
+                  "website_id" => "1",
+                  "name" => "Default",
+                  "root_category_id" => "1",
+                  "default_store_id" => "1",
+                  "code" => "default",
+                ],
+              ],
+            ];
+          }
+          file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
+          '
           if [ -n "${LEGACY_BUILD_COMMAND}" ]; then
             echo "Running legacy build_command override."
             printf '%s\n' "${LEGACY_BUILD_COMMAND}" > /tmp/mz-build-override.sh
