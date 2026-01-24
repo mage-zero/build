@@ -208,11 +208,19 @@ jobs:
           $root = getcwd();
           $preloadPath = $root . '/app/opcache-preload.php';
           $files = [];
+          $shouldSkip = function (string $path): bool {
+              $normalized = str_replace('\\', '/', strtolower($path));
+              return strpos($normalized, '/test/') !== false
+                  || strpos($normalized, '/tests/') !== false
+                  || strpos($normalized, '/dev/') !== false;
+          };
           $classmapPath = $root . '/vendor/composer/autoload_classmap.php';
           if (is_file($classmapPath)) {
               $classmap = require $classmapPath;
               if (is_array($classmap)) {
-                  $files = array_values($classmap);
+                  $files = array_values(array_filter($classmap, function ($path) use ($shouldSkip) {
+                      return is_string($path) && !$shouldSkip($path);
+                  }));
               }
           }
           $scanDirs = [
@@ -229,7 +237,11 @@ jobs:
               );
               foreach ($iterator as $file) {
                   if ($file->isFile() && $file->getExtension() === 'php') {
-                      $files[] = $file->getPathname();
+                      $pathName = $file->getPathname();
+                      if ($shouldSkip($pathName)) {
+                          continue;
+                      }
+                      $files[] = $pathName;
                   }
               }
           }
