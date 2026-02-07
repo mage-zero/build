@@ -200,7 +200,10 @@ jobs:
           composer install --no-dev --prefer-dist
           bin/magento setup:di:compile
           composer dump-autoload --optimize
-          bin/magento setup:static-content:deploy -f
+          bin/magento setup:static-content:deploy -f -j 2
+
+          # Guardrail: admin UI depends on pub/static/adminhtml being present in the artifact.
+          test -d pub/static/adminhtml
         env:
           COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
           LEGACY_BUILD_COMMAND: ${{ inputs.build_command }}
