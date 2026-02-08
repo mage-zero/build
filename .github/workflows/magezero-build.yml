@@ -8,6 +8,11 @@ on:
         required: false
         default: ${{ github.sha }}
         type: string
+      enable_promotions:
+        description: "Enable same-run promotion jobs (staging/production). NOTE: without environment approvals this will auto-run."
+        required: false
+        default: false
+        type: boolean
       setup_php:
         description: Install PHP tooling on the runner.
         required: false
@@ -149,7 +154,10 @@ jobs:
           echo "" >> "${GITHUB_STEP_SUMMARY}"
           echo "Auto deploy targets the first environment above." >> "${GITHUB_STEP_SUMMARY}"
           echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "To make promotions manual: configure GitHub Environments with required reviewers (e.g. \`staging\` and \`production\`)." >> "${GITHUB_STEP_SUMMARY}"
+          echo "This build run id (for promotions): ${GITHUB_RUN_ID}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Same-run promotions are disabled by default (input: \`enable_promotions\`)." >> "${GITHUB_STEP_SUMMARY}"
+          echo "If you enable promotions, you should gate them using environment approvals (GitHub Enterprise for private repos)." >> "${GITHUB_STEP_SUMMARY}"
         env:
           PROMOTION_TARGETS_JSON: ${{ steps.creds.outputs.promotion_targets_json }}
 
@@ -464,7 +472,7 @@ jobs:
     name: Build/Deploy (${{ needs.prepare.outputs.target_1_env }})
     runs-on: ubuntu-latest
     needs: [prepare, create_build, deploy_auto]
-    if: ${{ needs.prepare.outputs.target_1_id != '' }}
+    if: ${{ inputs.enable_promotions && needs.prepare.outputs.target_1_id != '' }}
     environment: ${{ needs.prepare.outputs.target_1_env }}
     permissions:
       id-token: write
@@ -534,7 +542,7 @@ jobs:
     name: Build/Deploy (${{ needs.prepare.outputs.target_2_env }})
     runs-on: ubuntu-latest
     needs: [prepare, create_build, promote_1]
-    if: ${{ needs.prepare.outputs.target_2_id != '' }}
+    if: ${{ inputs.enable_promotions && needs.prepare.outputs.target_2_id != '' }}
     environment: ${{ needs.prepare.outputs.target_2_env }}
     permissions:
       id-token: write
