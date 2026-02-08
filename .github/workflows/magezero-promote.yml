@@ -1,0 +1,185 @@
+name: MageZero Promote
+
+on:
+  workflow_call:
+    inputs:
+      mz_control_url:
+        description: Base URL for mz-control.
+        required: true
+        type: string
+      source_run_id:
+        description: "Workflow run id that created the build artifact (used to download magezero-build-<run_id>)."
+        required: true
+        type: string
+      target_environment:
+        description: Target environment label (development|staging|production).
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  promote:
+    name: Promote
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifact (from source run)
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          name: magezero-build-${{ inputs.source_run_id }}
+          path: /tmp/mz-promote
+
+      - name: Resolve artifact key
+        id: artifact
+        run: |
+          set -euo pipefail
+          ARTIFACT_PATH="$(ls -1 /tmp/mz-promote/*.tar.zst 2>/dev/null | head -n 1 || true)"
+          if [ -z "${ARTIFACT_PATH}" ]; then
+            echo "No .tar.zst artifact found in /tmp/mz-promote"
+            ls -la /tmp/mz-promote || true
+            exit 1
+          fi
+          ARTIFACT_NAME="$(basename "${ARTIFACT_PATH}")"
+          OBJECT_KEY="builds/${GITHUB_REPOSITORY}/${ARTIFACT_NAME}"
+          echo "artifact_path=${ARTIFACT_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "object_key=${OBJECT_KEY}" >> "${GITHUB_OUTPUT}"
+          echo "Using artifact: ${OBJECT_KEY}"
+
+      - name: Resolve target environment
+        id: target
+        run: |
+          set -euo pipefail
+          BASE_URL="${MZ_CONTROL_URL%/}"
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/credentials" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
+          RESPONSE_BODY="${RESPONSE%$'\n'*}"
+          RESPONSE_CODE="${RESPONSE##*$'\n'}"
+          if [ "${RESPONSE_CODE}" -ge 300 ]; then
+            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+            exit 1
+          fi
+
+          DEPLOY_URL="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.deploy_url // ""')"
+          if [ -z "${DEPLOY_URL}" ] || [ "${DEPLOY_URL}" = "null" ]; then
+            echo "mz-control error: missing deploy_url"
+            exit 1
+          fi
+
+          TARGET_ENV="${TARGET_ENVIRONMENT}"
+          TARGET_TYPE=""
+          case "$(printf '%s' "${TARGET_ENV}" | tr '[:upper:]' '[:lower:]')" in
+            development|dev|non-production|non_production|nonproduction) TARGET_TYPE="non-production" ;;
+            staging|stage|performance) TARGET_TYPE="performance" ;;
+            production|prod) TARGET_TYPE="production" ;;
+            *)
+              echo "Invalid target_environment: ${TARGET_ENV}. Expected development|staging|production."
+              exit 1
+              ;;
+          esac
+
+          PROMOTION_TARGETS="$(printf '%s' "${RESPONSE_BODY}" | jq -c '.promotion_targets // []')"
+          TARGET_JSON="$(printf '%s' "${PROMOTION_TARGETS}" | jq -c --arg TYPE "${TARGET_TYPE}" 'map(select((.environment_type // "") == $TYPE))[0] // empty')"
+          if [ -z "${TARGET_JSON}" ]; then
+            echo "No eligible ${TARGET_TYPE} environment for this repository/ref."
+            echo "promotion_targets=${PROMOTION_TARGETS}"
+            exit 1
+          fi
+
+          TARGET_ENV_ID="$(printf '%s' "${TARGET_JSON}" | jq -r '.environment_id // empty')"
+          if [ -z "${TARGET_ENV_ID}" ]; then
+            echo "Target environment_id missing in target record: ${TARGET_JSON}"
+            exit 1
+          fi
+
+          echo "deploy_url=${DEPLOY_URL}" >> "${GITHUB_OUTPUT}"
+          echo "promotion_targets_json=${PROMOTION_TARGETS}" >> "${GITHUB_OUTPUT}"
+          echo "target_environment_type=${TARGET_TYPE}" >> "${GITHUB_OUTPUT}"
+          echo "target_environment_id=${TARGET_ENV_ID}" >> "${GITHUB_OUTPUT}"
+          echo "target_json=${TARGET_JSON}" >> "${GITHUB_OUTPUT}"
+
+          echo "Target: ${TARGET_ENV} -> ${TARGET_TYPE} (environment_id=${TARGET_ENV_ID})"
+        env:
+          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+
+      - name: Summary
+        run: |
+          echo "### Promotion" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Target: \`${TARGET_ENVIRONMENT}\` (\`${TARGET_ENV_TYPE}\`)" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Environment id: \`${TARGET_ENV_ID}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Artifact: \`${OBJECT_KEY}\`" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "### Eligible environments" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "| Order | Env | Environment ID | Type | Name | Hostname |" >> "${GITHUB_STEP_SUMMARY}"
+          echo "|---:|---|---:|---|---|---|" >> "${GITHUB_STEP_SUMMARY}"
+          echo "${PROMOTION_TARGETS_JSON}" | jq -r 'to_entries[] | "| " + ((.key + 1) | tostring) + " | " + ( .value.environment_type // "" | ascii_downcase | (if . == "non-production" then "development" elif . == "performance" then "staging" elif . == "production" then "production" else . end) ) + " | " + ((.value.environment_id // "")|tostring) + " | " + ((.value.environment_type // "")|tostring) + " | " + ((.value.name // "")|tostring) + " | " + ((.value.hostname // "")|tostring) + " |"' >> "${GITHUB_STEP_SUMMARY}"
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.target_environment }}
+          TARGET_ENV_TYPE: ${{ steps.target.outputs.target_environment_type }}
+          TARGET_ENV_ID: ${{ steps.target.outputs.target_environment_id }}
+          OBJECT_KEY: ${{ steps.artifact.outputs.object_key }}
+          PROMOTION_TARGETS_JSON: ${{ steps.target.outputs.promotion_targets_json }}
+
+      - name: Request upload URL
+        id: presign
+        run: |
+          set -euo pipefail
+          BASE_URL="${MZ_CONTROL_URL%/}"
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":1800}")"
+          RESPONSE_BODY="${RESPONSE%$'\n'*}"
+          RESPONSE_CODE="${RESPONSE##*$'\n'}"
+          if [ "${RESPONSE_CODE}" -ge 300 ]; then
+            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+            exit 1
+          fi
+          UPLOAD_URL="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.url // empty')"
+          if [ -z "${UPLOAD_URL}" ] || [ "${UPLOAD_URL}" = "null" ]; then
+            echo "mz-control error: missing upload URL"
+            exit 1
+          fi
+          echo "::add-mask::${UPLOAD_URL}"
+          echo "upload_url=${UPLOAD_URL}" >> "${GITHUB_OUTPUT}"
+        env:
+          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          TARGET_ENV_ID: ${{ steps.target.outputs.target_environment_id }}
+          OBJECT_KEY: ${{ steps.artifact.outputs.object_key }}
+
+      - name: Upload artifact to R2
+        run: |
+          curl -fsS -X PUT --upload-file "${ARTIFACT_PATH}" "${UPLOAD_URL}"
+        env:
+          ARTIFACT_PATH: ${{ steps.artifact.outputs.artifact_path }}
+          UPLOAD_URL: ${{ steps.presign.outputs.upload_url }}
+
+      - name: Trigger deployment
+        run: |
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          curl -fsS -X POST "${DEPLOY_URL}" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"artifact\":\"${OBJECT_KEY}\",\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID}}"
+        env:
+          DEPLOY_URL: ${{ steps.target.outputs.deploy_url }}
+          OBJECT_KEY: ${{ steps.artifact.outputs.object_key }}
+          TARGET_ENV_ID: ${{ steps.target.outputs.target_environment_id }}
+
