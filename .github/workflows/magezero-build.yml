@@ -104,8 +104,9 @@ jobs:
           echo "Promotion targets: ${PROMOTION_TARGETS}"
 
           # Targets are ordered from lowest -> highest environment type.
-          TARGET_0_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[0].environment_id // empty')"
-          TARGET_0_TYPE="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[0].environment_type // empty')"
+          # Safety invariant: production MUST NEVER auto-deploy.
+          TARGET_0_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '[.[] | select((.environment_type // "" | ascii_downcase) != "production")][0].environment_id // empty')"
+          TARGET_0_TYPE="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '[.[] | select((.environment_type // "" | ascii_downcase) != "production")][0].environment_type // empty')"
           TARGET_1_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[1].environment_id // empty')"
           TARGET_1_TYPE="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[1].environment_type // empty')"
           TARGET_2_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[2].environment_id // empty')"
