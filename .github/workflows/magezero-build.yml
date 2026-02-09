@@ -23,7 +23,7 @@ on:
         required: true
         type: string
       build_command:
-        description: Legacy build command that replaces the default MageZero build (deprecated).
+        description: Optional build command that replaces the default MageZero build.
         required: false
         default: ""
         type: string
@@ -78,7 +78,7 @@ jobs:
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/credentials" \
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/context" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
@@ -261,9 +261,9 @@ jobs:
           }
           file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
           '
-          if [ -n "${LEGACY_BUILD_COMMAND}" ]; then
-            echo "Running legacy build_command override."
-            printf '%s\n' "${LEGACY_BUILD_COMMAND}" > /tmp/mz-build-override.sh
+          if [ -n "${BUILD_COMMAND_OVERRIDE}" ]; then
+            echo "Running build_command override."
+            printf '%s\n' "${BUILD_COMMAND_OVERRIDE}" > /tmp/mz-build-override.sh
             . /tmp/mz-build-override.sh
             exit 0
           fi
@@ -281,7 +281,7 @@ jobs:
           test -d pub/static/adminhtml
         env:
           COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
-          LEGACY_BUILD_COMMAND: ${{ inputs.build_command }}
+          BUILD_COMMAND_OVERRIDE: ${{ inputs.build_command }}
           EXTRA_BUILD_COMMAND: ${{ inputs.extra_build_command }}
 
       - name: Generate OPcache preload file
