@@ -32,6 +32,31 @@ on:
         required: false
         default: ""
         type: string
+      scd_locales:
+        description: Optional space-separated locales to pass to setup:static-content:deploy (e.g. "en_US en_GB"). Empty means use Magento defaults.
+        required: false
+        default: ""
+        type: string
+      scd_themes:
+        description: Optional space-separated themes to deploy static content for (e.g. "Vendor/theme Magento/backend"). Empty means all themes.
+        required: false
+        default: ""
+        type: string
+      scd_no_parent:
+        description: Pass --no-parent to setup:static-content:deploy (useful for custom themes).
+        required: false
+        default: false
+        type: boolean
+      scd_extra_args:
+        description: Optional extra args for setup:static-content:deploy (space-separated; advanced).
+        required: false
+        default: ""
+        type: string
+      scd_jobs:
+        description: Parallel jobs for setup:static-content:deploy (-j).
+        required: false
+        default: "2"
+        type: string
     secrets:
       COMPOSER_AUTH:
         required: false
@@ -284,7 +309,31 @@ jobs:
           composer install --no-dev --prefer-dist
           bin/magento setup:di:compile
           composer dump-autoload --optimize
-          bin/magento setup:static-content:deploy -f -j 2
+          SCD_JOBS="${SCD_JOBS:-2}"
+          SCD_LOCALES="${SCD_LOCALES:-}"
+          SCD_THEMES="${SCD_THEMES:-}"
+          SCD_EXTRA_ARGS="${SCD_EXTRA_ARGS:-}"
+          SCD_NO_PARENT="${SCD_NO_PARENT:-false}"
+
+          scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}")
+          if [ "${SCD_NO_PARENT}" = "true" ]; then
+            scd_cmd+=(--no-parent)
+          fi
+          if [ -n "${SCD_EXTRA_ARGS}" ]; then
+            # Intentionally allow space-separated args for advanced usage.
+            read -r -a scd_extra <<< "${SCD_EXTRA_ARGS}"
+            scd_cmd+=("${scd_extra[@]}")
+          fi
+          if [ -n "${SCD_THEMES}" ]; then
+            for theme in ${SCD_THEMES}; do
+              scd_cmd+=(--theme "${theme}")
+            done
+          fi
+          if [ -n "${SCD_LOCALES}" ]; then
+            read -r -a scd_locales <<< "${SCD_LOCALES}"
+            scd_cmd+=("${scd_locales[@]}")
+          fi
+          "${scd_cmd[@]}"
 
           # Guardrail: admin UI depends on pub/static/adminhtml being present in the artifact.
           test -d pub/static/adminhtml
@@ -292,6 +341,11 @@ jobs:
           COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
           BUILD_COMMAND_OVERRIDE: ${{ inputs.build_command }}
           EXTRA_BUILD_COMMAND: ${{ inputs.extra_build_command }}
+          SCD_LOCALES: ${{ inputs.scd_locales }}
+          SCD_THEMES: ${{ inputs.scd_themes }}
+          SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
+          SCD_EXTRA_ARGS: ${{ inputs.scd_extra_args }}
+          SCD_JOBS: ${{ inputs.scd_jobs }}
 
       - name: Generate OPcache preload file
         if: ${{ inputs.setup_php && inputs.build_command == '' }}
