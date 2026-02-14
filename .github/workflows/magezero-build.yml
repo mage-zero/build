@@ -42,21 +42,11 @@ on:
         required: false
         default: ""
         type: string
-      scd_options:
-        description: Optional extra options for setup:static-content:deploy (space-separated; e.g. "--no-parent"). Advanced.
-        required: false
-        default: ""
-        type: string
       scd_no_parent:
-        description: DEPRECATED. Use scd_options="--no-parent".
+        description: Pass --no-parent to setup:static-content:deploy (useful for custom themes).
         required: false
         default: false
         type: boolean
-      scd_extra_args:
-        description: DEPRECATED. Use scd_options.
-        required: false
-        default: ""
-        type: string
       scd_jobs:
         description: Parallel jobs for setup:static-content:deploy (-j).
         required: false
@@ -318,23 +308,51 @@ jobs:
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
           SCD_NO_PARENT="${SCD_NO_PARENT:-false}"
-          SCD_OPTIONS="${SCD_OPTIONS:-}"
-          SCD_EXTRA_ARGS="${SCD_EXTRA_ARGS:-}"
+
+          # Hard validation to prevent clients from injecting arbitrary CLI flags.
+          # Only expose structured inputs: locales, themes, jobs, and explicit booleans.
+          if ! printf '%s' "${SCD_JOBS}" | grep -Eq '^[0-9]+$'; then
+            echo "Invalid SCD_JOBS: ${SCD_JOBS}"
+            exit 1
+          fi
+          if [ "${SCD_JOBS}" -lt 1 ] || [ "${SCD_JOBS}" -gt 8 ]; then
+            echo "SCD_JOBS out of range (1-8): ${SCD_JOBS}"
+            exit 1
+          fi
+
+          locale_count=0
+          if [ -n "${SCD_LOCALES}" ]; then
+            for locale in ${SCD_LOCALES}; do
+              locale_count=$((locale_count+1))
+              if [ "${locale_count}" -gt 20 ]; then
+                echo "Too many locales (max 20)."
+                exit 1
+              fi
+              if ! printf '%s' "${locale}" | grep -Eq '^[A-Za-z]{2}_[A-Za-z]{2}$'; then
+                echo "Invalid locale: ${locale}"
+                exit 1
+              fi
+            done
+          fi
+
+          theme_count=0
+          if [ -n "${SCD_THEMES}" ]; then
+            for theme in ${SCD_THEMES}; do
+              theme_count=$((theme_count+1))
+              if [ "${theme_count}" -gt 20 ]; then
+                echo "Too many themes (max 20)."
+                exit 1
+              fi
+              if ! printf '%s' "${theme}" | grep -Eq '^[A-Za-z0-9_]+/[A-Za-z0-9_]+$'; then
+                echo "Invalid theme: ${theme}"
+                exit 1
+              fi
+            done
+          fi
 
           scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}")
-          if [ -n "${SCD_OPTIONS}" ]; then
-            # Intentionally allow space-separated args for advanced usage.
-            read -r -a scd_opts <<< "${SCD_OPTIONS}"
-            scd_cmd+=("${scd_opts[@]}")
-          else
-            # Backward compat (deprecated).
-            if [ "${SCD_NO_PARENT}" = "true" ]; then
-              scd_cmd+=(--no-parent)
-            fi
-            if [ -n "${SCD_EXTRA_ARGS}" ]; then
-              read -r -a scd_extra <<< "${SCD_EXTRA_ARGS}"
-              scd_cmd+=("${scd_extra[@]}")
-            fi
+          if [ "${SCD_NO_PARENT}" = "true" ]; then
+            scd_cmd+=(--no-parent)
           fi
           if [ -n "${SCD_THEMES}" ]; then
             for theme in ${SCD_THEMES}; do
@@ -355,9 +373,7 @@ jobs:
           EXTRA_BUILD_COMMAND: ${{ inputs.extra_build_command }}
           SCD_LOCALES: ${{ inputs.scd_locales }}
           SCD_THEMES: ${{ inputs.scd_themes }}
-          SCD_OPTIONS: ${{ inputs.scd_options }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
-          SCD_EXTRA_ARGS: ${{ inputs.scd_extra_args }}
           SCD_JOBS: ${{ inputs.scd_jobs }}
 
       - name: Generate OPcache preload file
