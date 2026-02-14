@@ -46,6 +46,7 @@ jobs:
     outputs:
       deploy_url: ${{ steps.creds.outputs.deploy_url }}
       php_version: ${{ steps.creds.outputs.php_version }}
+      composer_version: ${{ steps.creds.outputs.composer_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
       object_key: ${{ steps.meta.outputs.object_key }}
       promotion_targets_json: ${{ steps.creds.outputs.promotion_targets_json }}
@@ -98,6 +99,9 @@ jobs:
 
           PHP_VERSION="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.php_version // "8.2"')"
           echo "php_version=${PHP_VERSION}" >> "${GITHUB_OUTPUT}"
+
+          COMPOSER_VERSION="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.composer_version // "v2"')"
+          echo "composer_version=${COMPOSER_VERSION}" >> "${GITHUB_OUTPUT}"
 
           PROMOTION_TARGETS="$(printf '%s' "${RESPONSE_BODY}" | jq -c '.promotion_targets // []')"
           echo "promotion_targets_json=${PROMOTION_TARGETS}" >> "${GITHUB_OUTPUT}"
@@ -177,13 +181,17 @@ jobs:
         run: |
           echo "Requested PHP version: ${{ needs.prepare.outputs.php_version }}"
 
+      - name: Log Composer selection
+        run: |
+          echo "Requested Composer version: ${{ needs.prepare.outputs.composer_version }}"
+
       - name: Setup PHP
         if: ${{ inputs.setup_php }}
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ needs.prepare.outputs.php_version }}
           extensions: rrd
-          tools: composer:v2
+          tools: composer:${{ needs.prepare.outputs.composer_version }}
 
       - name: Verify PHP
         if: ${{ inputs.setup_php }}
