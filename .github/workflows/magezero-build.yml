@@ -289,37 +289,93 @@ jobs:
         if: ${{ inputs.setup_php && inputs.build_command == '' }}
         run: |
           PRELOAD_PATH="app/opcache-preload.php"
-          cat > /tmp/mz-opcache-preload.php <<'PHP'
+          cat > /tmp/mz-opcache-preload-candidates.php <<'PHP'
           <?php
           $root = getcwd();
-          $preloadPath = $root . '/app/opcache-preload.php';
           $files = [];
           $shouldSkip = function (string $path): bool {
               $normalized = str_replace('\\', '/', strtolower($path));
+              // Keep the preload list conservative. Anything that does not parse on the target PHP version
+              // will crash PHP-FPM at startup (preload happens before userland try/catch can run).
               return strpos($normalized, '/test/') !== false
                   || strpos($normalized, '/tests/') !== false
-                  || strpos($normalized, '/dev/') !== false;
+                  || strpos($normalized, '/dev/') !== false
+                  // Magento 2.4.x can carry legacy ZF1 code that is not PHP 8+ parse-safe. Exclude by default.
+                  || strpos($normalized, '/vendor/magento/zendframework1/') !== false;
           };
-          $classmapPath = $root . '/vendor/composer/autoload_classmap.php';
-          if (is_file($classmapPath)) {
-              $classmap = require $classmapPath;
-              if (is_array($classmap)) {
-                  $files = array_values(array_filter($classmap, function ($path) use ($shouldSkip) {
-                      return is_string($path) && !$shouldSkip($path);
-                  }));
+
+          // 1) Composer "always-loaded" files.
+          $autoloadFilesPath = $root . '/vendor/composer/autoload_files.php';
+          if (is_file($autoloadFilesPath)) {
+              $autoloadFiles = require $autoloadFilesPath;
+              if (is_array($autoloadFiles)) {
+                  foreach ($autoloadFiles as $path) {
+                      if (!is_string($path) || $shouldSkip($path)) {
+                          continue;
+                      }
+                      $files[] = $path;
+                  }
               }
           }
-          $scanDirs = [
-              $root . '/app/code',
-              $root . '/generated/code',
-              $root . '/generated/metadata',
-          ];
-          foreach ($scanDirs as $dir) {
-              if (!is_dir($dir)) {
-                  continue;
+
+          // 2) Concrete classes referenced by compiled DI metadata.
+          $autoloadPath = $root . '/vendor/autoload.php';
+          $loader = is_file($autoloadPath) ? (require $autoloadPath) : null;
+          $findFile = function (string $fqcn) use ($loader): ?string {
+              if (!$loader || !is_object($loader) || !method_exists($loader, 'findFile')) {
+                  return null;
               }
+              $path = $loader->findFile($fqcn);
+              return is_string($path) && $path !== '' ? $path : null;
+          };
+
+          $metadataRoot = $root . '/generated/metadata';
+          if (is_dir($metadataRoot)) {
               $iterator = new RecursiveIteratorIterator(
-                  new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS)
+                  new RecursiveDirectoryIterator($metadataRoot, FilesystemIterator::SKIP_DOTS)
+              );
+              foreach ($iterator as $file) {
+                  if (!$file->isFile() || $file->getExtension() !== 'php') {
+                      continue;
+                  }
+                  $metaPath = $file->getPathname();
+                  if ($shouldSkip($metaPath)) {
+                      continue;
+                  }
+                  $config = require $metaPath;
+                  if (!is_array($config)) {
+                      continue;
+                  }
+
+                  // Preferences: interface => concrete class
+                  foreach (($config['preferences'] ?? []) as $concrete) {
+                      if (!is_string($concrete) || $concrete === '') {
+                          continue;
+                      }
+                      $path = $findFile($concrete);
+                      if ($path && !$shouldSkip($path)) {
+                          $files[] = $path;
+                      }
+                  }
+
+                  // Instance types: virtual types => concrete classes
+                  foreach (($config['instanceTypes'] ?? []) as $type => $_info) {
+                      if (!is_string($type) || $type === '') {
+                          continue;
+                      }
+                      $path = $findFile($type);
+                      if ($path && !$shouldSkip($path)) {
+                          $files[] = $path;
+                      }
+                  }
+              }
+          }
+
+          // 3) Generated code (factories/interceptors/proxies) tends to be a high-signal preload target.
+          $generatedCode = $root . '/generated/code';
+          if (is_dir($generatedCode)) {
+              $iterator = new RecursiveIteratorIterator(
+                  new RecursiveDirectoryIterator($generatedCode, FilesystemIterator::SKIP_DOTS)
               );
               foreach ($iterator as $file) {
                   if ($file->isFile() && $file->getExtension() === 'php') {
@@ -331,48 +387,67 @@ jobs:
                   }
               }
           }
-          $files = array_values(array_unique($files));
+
+          $files = array_values(array_unique(array_filter($files, 'is_string')));
           sort($files);
-          $relative = [];
-          $rootPrefix = $root . DIRECTORY_SEPARATOR;
+
           foreach ($files as $file) {
               $real = realpath($file);
-              if ($real === false) {
+              if ($real === false || $shouldSkip($real)) {
                   continue;
               }
-              if (strpos($real, $rootPrefix) !== 0) {
-                  continue;
-              }
-              $path = substr($real, strlen($rootPrefix));
-              if ($path === 'app/opcache-preload.php') {
-                continue;
-              }
-              $relative[] = $path;
+              echo $real . PHP_EOL;
           }
-          $relative = array_values(array_unique($relative));
-          $lines = [
-              '<?php',
-              '// Generated at build time. Do not edit.',
-              'if (!function_exists("opcache_compile_file")) { return; }',
-              '$root = dirname(__DIR__);',
-              '$files = ' . var_export($relative, true) . ';',
-              'foreach ($files as $file) {',
-              '    $path = $root . "/" . $file;',
-              '    if (is_file($path)) {',
-              '        @opcache_compile_file($path);',
-              '    }',
-              '}',
-          ];
-          if (!is_dir(dirname($preloadPath))) {
-              mkdir(dirname($preloadPath), 0775, true);
-          }
-          file_put_contents($preloadPath, implode(PHP_EOL, $lines) . PHP_EOL);
           PHP
-          if [ -f "vendor/composer/autoload_classmap.php" ]; then
-            php /tmp/mz-opcache-preload.php || true
+
+          # Candidate list (absolute paths)
+          php /tmp/mz-opcache-preload-candidates.php > /tmp/mz-opcache-preload.candidates.txt || true
+
+          # Filter candidates to only files that parse on this build's PHP version.
+          # Preload cannot recover from parse errors, so we must exclude them.
+          if [ -s /tmp/mz-opcache-preload.candidates.txt ]; then
+            xargs -a /tmp/mz-opcache-preload.candidates.txt -n 1 -P 6 sh -c 'php -l "$1" >/dev/null 2>&1 && echo "$1"' _ \
+              > /tmp/mz-opcache-preload.ok.txt || true
           else
-            echo "Skipping preload generation; classmap not available."
+            : > /tmp/mz-opcache-preload.ok.txt
           fi
+
+          # Emit preload file using repo-relative paths.
+          php -r '
+            $root = getcwd();
+            $preloadPath = $root . "/app/opcache-preload.php";
+            $okList = "/tmp/mz-opcache-preload.ok.txt";
+            $rootPrefix = rtrim($root, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+            $files = [];
+            if (is_file($okList)) {
+              $lines = file($okList, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+              foreach ($lines as $abs) {
+                $abs = trim((string)$abs);
+                if ($abs === "" || strpos($abs, $rootPrefix) !== 0) { continue; }
+                $rel = substr($abs, strlen($rootPrefix));
+                if ($rel === "app/opcache-preload.php") { continue; }
+                $files[$rel] = true;
+              }
+            }
+            ksort($files);
+            $lines = [
+              "<?php",
+              "// Generated at build time. Do not edit.",
+              "if (!function_exists(\"opcache_compile_file\")) { return; }",
+              "\$root = dirname(__DIR__);",
+              "\$files = " . var_export(array_keys($files), true) . ";",
+              "foreach (\$files as \$file) {",
+              "    \$path = \$root . \"/\" . \$file;",
+              "    if (is_file(\$path)) {",
+              "        @opcache_compile_file(\$path);",
+              "    }",
+              "}",
+              "",
+            ];
+            if (!is_dir(dirname($preloadPath))) { mkdir(dirname($preloadPath), 0775, true); }
+            file_put_contents($preloadPath, implode(PHP_EOL, $lines));
+          ' || true
+
           if [ ! -s "${PRELOAD_PATH}" ]; then
             echo "<?php return;" > "${PRELOAD_PATH}"
           fi
