@@ -42,13 +42,18 @@ on:
         required: false
         default: ""
         type: string
+      scd_options:
+        description: Optional extra options for setup:static-content:deploy (space-separated; e.g. "--no-parent"). Advanced.
+        required: false
+        default: ""
+        type: string
       scd_no_parent:
-        description: Pass --no-parent to setup:static-content:deploy (useful for custom themes).
+        description: DEPRECATED. Use scd_options="--no-parent".
         required: false
         default: false
         type: boolean
       scd_extra_args:
-        description: Optional extra args for setup:static-content:deploy (space-separated; advanced).
+        description: DEPRECATED. Use scd_options.
         required: false
         default: ""
         type: string
@@ -312,17 +317,24 @@ jobs:
           SCD_JOBS="${SCD_JOBS:-2}"
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
-          SCD_EXTRA_ARGS="${SCD_EXTRA_ARGS:-}"
           SCD_NO_PARENT="${SCD_NO_PARENT:-false}"
+          SCD_OPTIONS="${SCD_OPTIONS:-}"
+          SCD_EXTRA_ARGS="${SCD_EXTRA_ARGS:-}"
 
           scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}")
-          if [ "${SCD_NO_PARENT}" = "true" ]; then
-            scd_cmd+=(--no-parent)
-          fi
-          if [ -n "${SCD_EXTRA_ARGS}" ]; then
+          if [ -n "${SCD_OPTIONS}" ]; then
             # Intentionally allow space-separated args for advanced usage.
-            read -r -a scd_extra <<< "${SCD_EXTRA_ARGS}"
-            scd_cmd+=("${scd_extra[@]}")
+            read -r -a scd_opts <<< "${SCD_OPTIONS}"
+            scd_cmd+=("${scd_opts[@]}")
+          else
+            # Backward compat (deprecated).
+            if [ "${SCD_NO_PARENT}" = "true" ]; then
+              scd_cmd+=(--no-parent)
+            fi
+            if [ -n "${SCD_EXTRA_ARGS}" ]; then
+              read -r -a scd_extra <<< "${SCD_EXTRA_ARGS}"
+              scd_cmd+=("${scd_extra[@]}")
+            fi
           fi
           if [ -n "${SCD_THEMES}" ]; then
             for theme in ${SCD_THEMES}; do
@@ -343,6 +355,7 @@ jobs:
           EXTRA_BUILD_COMMAND: ${{ inputs.extra_build_command }}
           SCD_LOCALES: ${{ inputs.scd_locales }}
           SCD_THEMES: ${{ inputs.scd_themes }}
+          SCD_OPTIONS: ${{ inputs.scd_options }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
           SCD_EXTRA_ARGS: ${{ inputs.scd_extra_args }}
           SCD_JOBS: ${{ inputs.scd_jobs }}
