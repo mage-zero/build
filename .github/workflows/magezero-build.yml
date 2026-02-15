@@ -301,6 +301,9 @@ jobs:
             printf '%s\n' "${EXTRA_BUILD_COMMAND}" > /tmp/mz-extra-build.sh
             . /tmp/mz-extra-build.sh
           fi
+          # Platform APM module (injected by MageZero)
+          composer config repositories.elastic-apm-magento vcs https://github.com/cmtickle/elastic-apm-magento.git
+          composer require cmtickle/module-elastic-apm:dev-develop --no-update
           composer install --no-dev --prefer-dist
           bin/magento setup:di:compile
           composer dump-autoload --optimize
