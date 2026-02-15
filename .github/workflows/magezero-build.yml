@@ -496,12 +496,31 @@ jobs:
 
           # Filter candidates to only files that parse on this build's PHP version.
           # Preload cannot recover from parse errors, so we must exclude them.
-          if [ -s /tmp/mz-opcache-preload.candidates.txt ]; then
-            xargs -a /tmp/mz-opcache-preload.candidates.txt -n 1 -P 6 sh -c 'php -l "$1" >/dev/null 2>&1 && echo "$1"' _ \
-              > /tmp/mz-opcache-preload.ok.txt || true
-          else
-            : > /tmp/mz-opcache-preload.ok.txt
-          fi
+          # Uses token_get_all(TOKEN_PARSE) in a single process instead of forking
+          # php -l per file, reducing lint time from minutes to seconds.
+          cat > /tmp/mz-opcache-lint.php <<'LINTPHP'
+          <?php
+          $input  = '/tmp/mz-opcache-preload.candidates.txt';
+          $output = '/tmp/mz-opcache-preload.ok.txt';
+          if (!is_file($input)) { file_put_contents($output, ''); exit(0); }
+          $candidates = file($input, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+          $ok = [];
+          $skipped = 0;
+          foreach ($candidates as $file) {
+              $file = trim($file);
+              if ($file === '' || !is_file($file)) { continue; }
+              try {
+                  token_get_all(file_get_contents($file), TOKEN_PARSE);
+                  $ok[] = $file;
+              } catch (\ParseError $e) {
+                  $skipped++;
+                  fwrite(STDERR, "Skipping (parse error): {$file}: {$e->getMessage()}\n");
+              }
+          }
+          file_put_contents($output, implode(PHP_EOL, $ok) . ($ok ? PHP_EOL : ''));
+          fwrite(STDERR, count($ok) . " files passed lint, {$skipped} skipped.\n");
+          LINTPHP
+          php /tmp/mz-opcache-lint.php || true
 
           # Emit preload file using repo-relative paths.
           php -r '
