@@ -607,29 +607,8 @@ jobs:
         env:
           ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
 
-      - name: Upload artifact to GitHub
-        uses: actions/upload-artifact@v4
-        with:
-          name: magezero-build-${{ github.run_id }}
-          path: ${{ env.ARTIFACT_PATH }}
-          if-no-files-found: error
-
-  deploy_auto:
-    name: Build/Deploy (${{ needs.prepare.outputs.target_0_env }})
-    runs-on: ubuntu-latest
-    needs: [prepare, create_build]
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: magezero-build-${{ github.run_id }}
-          path: /tmp
-
-      - name: Request upload URL
-        id: presign
+      - name: Request upload URL (primary target)
+        id: presign_primary
         run: |
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
@@ -667,8 +646,24 @@ jobs:
           curl -fsS -X PUT --upload-file "${ARTIFACT_PATH}" "${UPLOAD_URL}"
         env:
           ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
-          UPLOAD_URL: ${{ steps.presign.outputs.upload_url }}
+          UPLOAD_URL: ${{ steps.presign_primary.outputs.upload_url }}
 
+      - name: Upload artifact to GitHub
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: magezero-build-${{ github.run_id }}
+          path: ${{ env.ARTIFACT_PATH }}
+          if-no-files-found: error
+
+  deploy_auto:
+    name: Build/Deploy (${{ needs.prepare.outputs.target_0_env }})
+    runs-on: ubuntu-latest
+    needs: [prepare, create_build]
+    permissions:
+      id-token: write
+      contents: read
+    steps:
       - name: Trigger deployment
         if: ${{ needs.prepare.outputs.deploy_url != '' }}
         run: |
@@ -693,53 +688,6 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: magezero-build-${{ github.run_id }}
-          path: /tmp
-
-      - name: Request upload URL
-        id: presign
-        run: |
-          BASE_URL="${MZ_CONTROL_URL%/}"
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":1800}")"
-          RESPONSE_BODY="${RESPONSE%$'\n'*}"
-          RESPONSE_CODE="${RESPONSE##*$'\n'}"
-          if [ "${RESPONSE_CODE}" -ge 300 ]; then
-            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
-            exit 1
-          fi
-          UPLOAD_URL="$(echo "${RESPONSE_BODY}" | jq -r '.url')"
-          if [ -z "${UPLOAD_URL}" ] || [ "${UPLOAD_URL}" = "null" ]; then
-            echo "mz-control error: missing upload URL"
-            exit 1
-          fi
-          echo "::add-mask::${UPLOAD_URL}"
-          echo "upload_url=${UPLOAD_URL}" >> "${GITHUB_OUTPUT}"
-        env:
-          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
-          OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
-          TARGET_ENV_ID: ${{ needs.prepare.outputs.target_1_id }}
-
-      - name: Upload artifact to R2
-        run: |
-          ARTIFACT_PATH="/tmp/${ARTIFACT_NAME}"
-          if [ ! -f "${ARTIFACT_PATH}" ]; then
-            echo "Build artifact not found: ${ARTIFACT_PATH}"
-            ls -la /tmp || true
-            exit 1
-          fi
-          curl -fsS -X PUT --upload-file "${ARTIFACT_PATH}" "${UPLOAD_URL}"
-        env:
-          ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
-          UPLOAD_URL: ${{ steps.presign.outputs.upload_url }}
-
       - name: Trigger deployment
         run: |
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
@@ -763,53 +711,6 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: magezero-build-${{ github.run_id }}
-          path: /tmp
-
-      - name: Request upload URL
-        id: presign
-        run: |
-          BASE_URL="${MZ_CONTROL_URL%/}"
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":1800}")"
-          RESPONSE_BODY="${RESPONSE%$'\n'*}"
-          RESPONSE_CODE="${RESPONSE##*$'\n'}"
-          if [ "${RESPONSE_CODE}" -ge 300 ]; then
-            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
-            exit 1
-          fi
-          UPLOAD_URL="$(echo "${RESPONSE_BODY}" | jq -r '.url')"
-          if [ -z "${UPLOAD_URL}" ] || [ "${UPLOAD_URL}" = "null" ]; then
-            echo "mz-control error: missing upload URL"
-            exit 1
-          fi
-          echo "::add-mask::${UPLOAD_URL}"
-          echo "upload_url=${UPLOAD_URL}" >> "${GITHUB_OUTPUT}"
-        env:
-          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
-          OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
-          TARGET_ENV_ID: ${{ needs.prepare.outputs.target_2_id }}
-
-      - name: Upload artifact to R2
-        run: |
-          ARTIFACT_PATH="/tmp/${ARTIFACT_NAME}"
-          if [ ! -f "${ARTIFACT_PATH}" ]; then
-            echo "Build artifact not found: ${ARTIFACT_PATH}"
-            ls -la /tmp || true
-            exit 1
-          fi
-          curl -fsS -X PUT --upload-file "${ARTIFACT_PATH}" "${UPLOAD_URL}"
-        env:
-          ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
-          UPLOAD_URL: ${{ steps.presign.outputs.upload_url }}
-
       - name: Trigger deployment
         run: |
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
