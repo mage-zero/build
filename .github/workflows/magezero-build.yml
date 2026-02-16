@@ -99,16 +99,34 @@ jobs:
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/context" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
-          RESPONSE_BODY="${RESPONSE%$'\n'*}"
-          RESPONSE_CODE="${RESPONSE##*$'\n'}"
-          if [ "${RESPONSE_CODE}" -ge 300 ]; then
+          PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}"
+          MAX_ATTEMPTS="${MZ_CONTEXT_MAX_ATTEMPTS:-5}"
+          ATTEMPT=1
+          while :; do
+            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/context" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "${PAYLOAD}" || printf '\n000')"
+            RESPONSE_BODY="${RESPONSE%$'\n'*}"
+            RESPONSE_CODE="${RESPONSE##*$'\n'}"
+
+            if [ "${RESPONSE_CODE}" -lt 300 ]; then
+              break
+            fi
+
+            if [ "${RESPONSE_CODE}" = "000" ] || [ "${RESPONSE_CODE}" = "429" ] || [ "${RESPONSE_CODE}" -ge 500 ]; then
+              if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
+                SLEEP_SECONDS=$((ATTEMPT * 2))
+                echo "mz-control transient error (${RESPONSE_CODE}) attempt ${ATTEMPT}/${MAX_ATTEMPTS}; retrying in ${SLEEP_SECONDS}s"
+                sleep "${SLEEP_SECONDS}"
+                ATTEMPT=$((ATTEMPT + 1))
+                continue
+              fi
+            fi
+
             echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
             exit 1
-          fi
+          done
 
           DEPLOY_URL="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.deploy_url // ""')"
           if [ -z "${DEPLOY_URL}" ] || [ "${DEPLOY_URL}" = "null" ]; then
