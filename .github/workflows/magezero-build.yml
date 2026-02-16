@@ -301,9 +301,17 @@ jobs:
             printf '%s\n' "${EXTRA_BUILD_COMMAND}" > /tmp/mz-extra-build.sh
             . /tmp/mz-extra-build.sh
           fi
-          # Platform APM module (injected by MageZero)
-          composer config repositories.elastic-apm-magento vcs https://github.com/cmtickle/elastic-apm-magento.git
-          composer require cmtickle/module-elastic-apm:dev-develop --no-update
+          # Platform observability module (injected by MageZero)
+          composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
+          composer require mage-zero/magento2-opensearch-observability:1.0.1 --no-update
+          php -r '
+          $path = "app/etc/config.php";
+          $config = file_exists($path) ? include $path : [];
+          if (!is_array($config)) { $config = []; }
+          if (!isset($config["modules"]) || !is_array($config["modules"])) { $config["modules"] = []; }
+          $config["modules"]["MageZero_OpensearchObservability"] = 1;
+          file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
+          '
           composer install --no-dev --prefer-dist
           bin/magento setup:di:compile
           composer dump-autoload --optimize
