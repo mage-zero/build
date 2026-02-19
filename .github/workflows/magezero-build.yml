@@ -52,11 +52,6 @@ on:
         required: false
         default: "2"
         type: string
-      observability_module_version:
-        description: Optional mage-zero/magento2-opensearch-observability version. When empty, infer from composer.lock.
-        required: false
-        default: ""
-        type: string
     secrets:
       COMPOSER_AUTH:
         required: false
@@ -326,21 +321,7 @@ jobs:
           fi
           # Platform observability module (injected by MageZero)
           LOCKED_OBSERVABILITY_MODULE_VERSION=""
-          if [ -z "${OBSERVABILITY_MODULE_VERSION}" ] && [ -f composer.lock ]; then
-            LOCKED_OBSERVABILITY_MODULE_VERSION="$(php -r '
-            $lock = @json_decode(@file_get_contents("composer.lock"), true);
-            if (!is_array($lock)) { exit(0); }
-            $packages = array_merge($lock["packages"] ?? [], $lock["packages-dev"] ?? []);
-            foreach ($packages as $pkg) {
-              if (($pkg["name"] ?? "") === "mage-zero/magento2-opensearch-observability") {
-                echo (string)($pkg["version"] ?? "");
-                exit(0);
-              }
-            }
-            ')"
-            OBSERVABILITY_MODULE_VERSION="${LOCKED_OBSERVABILITY_MODULE_VERSION}"
-          fi
-          if [ -z "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ] && [ -f composer.lock ]; then
+          if [ -f composer.lock ]; then
             LOCKED_OBSERVABILITY_MODULE_VERSION="$(php -r '
             $lock = @json_decode(@file_get_contents("composer.lock"), true);
             if (!is_array($lock)) { exit(0); }
@@ -353,25 +334,46 @@ jobs:
             }
             ')"
           fi
-          OBSERVABILITY_MODULE_VERSION="${OBSERVABILITY_MODULE_VERSION:-1.0.3}"
-          OBSERVABILITY_MODULE_VERSION="${OBSERVABILITY_MODULE_VERSION#v}"
-          LOCKED_OBSERVABILITY_MODULE_VERSION="${LOCKED_OBSERVABILITY_MODULE_VERSION#v}"
-          echo "Using mage-zero/magento2-opensearch-observability:${OBSERVABILITY_MODULE_VERSION}"
-          composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
-          composer require "mage-zero/magento2-opensearch-observability:${OBSERVABILITY_MODULE_VERSION}" --no-update
+          if [ -n "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ]; then
+            echo "mage-zero/magento2-opensearch-observability already installed (${LOCKED_OBSERVABILITY_MODULE_VERSION}); skipping install."
+          else
+            echo "mage-zero/magento2-opensearch-observability not present in composer.lock; installing latest stable."
+            composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
+            composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+          fi
+          # Platform R2 storage module (injected by MageZero)
+          LOCKED_R2_MODULE_VERSION=""
+          if [ -f composer.lock ]; then
+            LOCKED_R2_MODULE_VERSION="$(php -r '
+            $lock = @json_decode(@file_get_contents("composer.lock"), true);
+            if (!is_array($lock)) { exit(0); }
+            $packages = array_merge($lock["packages"] ?? [], $lock["packages-dev"] ?? []);
+            foreach ($packages as $pkg) {
+              if (($pkg["name"] ?? "") === "magezero/magento2-cloudflare-r2-storage") {
+                echo (string)($pkg["version"] ?? "");
+                exit(0);
+              }
+            }
+            ')"
+          fi
+          if [ -n "${LOCKED_R2_MODULE_VERSION}" ]; then
+            echo "magezero/magento2-cloudflare-r2-storage already installed (${LOCKED_R2_MODULE_VERSION}); skipping install."
+          else
+            echo "magezero/magento2-cloudflare-r2-storage not present in composer.lock; installing latest stable."
+            composer config repositories.magezero-cloudflare-r2-storage vcs https://github.com/mage-zero/magento2-cloudflare-r2-storage.git
+            composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+          fi
           php -r '
           $path = "app/etc/config.php";
           $config = file_exists($path) ? include $path : [];
           if (!is_array($config)) { $config = []; }
           if (!isset($config["modules"]) || !is_array($config["modules"])) { $config["modules"] = []; }
           $config["modules"]["MageZero_OpensearchObservability"] = 1;
+          $config["modules"]["MageZero_CloudflareR2"] = 1;
           file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
           '
-          if [ -n "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ] && [ "${LOCKED_OBSERVABILITY_MODULE_VERSION}" = "${OBSERVABILITY_MODULE_VERSION}" ]; then
+          if [ -n "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ] && [ -n "${LOCKED_R2_MODULE_VERSION}" ]; then
             composer install --no-dev --prefer-dist
-          else
-            echo "composer.lock is missing or out of sync for mage-zero/magento2-opensearch-observability; running targeted update."
-            composer update mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist
           fi
           bin/magento setup:di:compile
           composer dump-autoload --optimize
@@ -446,7 +448,6 @@ jobs:
           SCD_THEMES: ${{ inputs.scd_themes }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
           SCD_JOBS: ${{ inputs.scd_jobs }}
-          OBSERVABILITY_MODULE_VERSION: ${{ inputs.observability_module_version }}
 
       - name: Generate OPcache preload file
         if: ${{ inputs.setup_php && inputs.build_command == '' }}
