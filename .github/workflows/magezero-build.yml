@@ -242,6 +242,11 @@ jobs:
             cp app/etc/config.php app/etc/config.php.bak
             trap 'mv app/etc/config.php.bak app/etc/config.php' EXIT
           fi
+          # Some locked Magento dependencies can be flagged by Packagist advisories.
+          # Do not block artifact builds on advisory-only checks in CI.
+          if ! composer config --global audit.block-insecure false; then
+            echo "Warning: failed to set composer audit.block-insecure=false globally."
+          fi
           php -r '
           $path = "app/etc/config.php";
           $config = file_exists($path) ? include $path : [];
