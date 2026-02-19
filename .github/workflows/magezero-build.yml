@@ -339,7 +339,7 @@ jobs:
           else
             echo "mage-zero/magento2-opensearch-observability not present in composer.lock; installing latest stable."
             composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
-            composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+            composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
           fi
           # Platform R2 storage module (injected by MageZero)
           LOCKED_R2_MODULE_VERSION=""
@@ -361,7 +361,7 @@ jobs:
           else
             echo "magezero/magento2-cloudflare-r2-storage not present in composer.lock; installing latest stable."
             composer config repositories.magezero-cloudflare-r2-storage vcs https://github.com/mage-zero/magento2-cloudflare-r2-storage.git
-            composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+            composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
           fi
           php -r '
           $path = "app/etc/config.php";
