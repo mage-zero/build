@@ -52,6 +52,11 @@ on:
         required: false
         default: "2"
         type: string
+      observability_module_version:
+        description: Optional mage-zero/magento2-opensearch-observability version. When empty, infer from composer.lock.
+        required: false
+        default: ""
+        type: string
     secrets:
       COMPOSER_AUTH:
         required: false
@@ -320,8 +325,23 @@ jobs:
             . /tmp/mz-extra-build.sh
           fi
           # Platform observability module (injected by MageZero)
+          if [ -z "${OBSERVABILITY_MODULE_VERSION}" ] && [ -f composer.lock ]; then
+            OBSERVABILITY_MODULE_VERSION="$(php -r '
+            $lock = @json_decode(@file_get_contents("composer.lock"), true);
+            if (!is_array($lock)) { exit(0); }
+            $packages = array_merge($lock["packages"] ?? [], $lock["packages-dev"] ?? []);
+            foreach ($packages as $pkg) {
+              if (($pkg["name"] ?? "") === "mage-zero/magento2-opensearch-observability") {
+                echo (string)($pkg["version"] ?? "");
+                exit(0);
+              }
+            }
+            ')"
+          fi
+          OBSERVABILITY_MODULE_VERSION="${OBSERVABILITY_MODULE_VERSION:-1.0.3}"
+          echo "Using mage-zero/magento2-opensearch-observability:${OBSERVABILITY_MODULE_VERSION}"
           composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
-          composer require mage-zero/magento2-opensearch-observability:1.0.2 --no-update
+          composer require "mage-zero/magento2-opensearch-observability:${OBSERVABILITY_MODULE_VERSION}" --no-update
           php -r '
           $path = "app/etc/config.php";
           $config = file_exists($path) ? include $path : [];
@@ -404,6 +424,7 @@ jobs:
           SCD_THEMES: ${{ inputs.scd_themes }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
           SCD_JOBS: ${{ inputs.scd_jobs }}
+          OBSERVABILITY_MODULE_VERSION: ${{ inputs.observability_module_version }}
 
       - name: Generate OPcache preload file
         if: ${{ inputs.setup_php && inputs.build_command == '' }}
