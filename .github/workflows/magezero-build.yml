@@ -347,14 +347,15 @@ jobs:
             }
             ')"
           fi
+          composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
           if [ -n "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ]; then
-            echo "mage-zero/magento2-opensearch-observability already installed (${LOCKED_OBSERVABILITY_MODULE_VERSION}); skipping install."
+            echo "mage-zero/magento2-opensearch-observability already installed (${LOCKED_OBSERVABILITY_MODULE_VERSION}); updating to latest."
+            composer update mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist
           else
             echo "mage-zero/magento2-opensearch-observability not present in composer.lock; installing latest stable."
-            composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
             composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
-            COMPOSER_MUTATED=1
           fi
+          COMPOSER_MUTATED=1
           # Platform R2 storage module (injected by MageZero)
           if [ "${ENABLE_R2_MODULE}" = "1" ]; then
             LOCKED_R2_MODULE_VERSION=""
@@ -371,14 +372,15 @@ jobs:
               }
               ')"
             fi
+            composer config repositories.magezero-cloudflare-r2-storage vcs https://github.com/mage-zero/magento2-cloudflare-r2-storage.git
             if [ -n "${LOCKED_R2_MODULE_VERSION}" ]; then
-              echo "magezero/magento2-cloudflare-r2-storage already installed (${LOCKED_R2_MODULE_VERSION}); skipping install."
+              echo "magezero/magento2-cloudflare-r2-storage already installed (${LOCKED_R2_MODULE_VERSION}); updating to latest."
+              composer update magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist
             else
               echo "magezero/magento2-cloudflare-r2-storage not present in composer.lock; installing latest stable."
-              composer config repositories.magezero-cloudflare-r2-storage vcs https://github.com/mage-zero/magento2-cloudflare-r2-storage.git
               composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
-              COMPOSER_MUTATED=1
             fi
+            COMPOSER_MUTATED=1
           fi
           ENABLE_R2_MODULE="${ENABLE_R2_MODULE}" php -r '
           $path = "app/etc/config.php";
