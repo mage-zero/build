@@ -459,6 +459,19 @@ jobs:
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
           SCD_JOBS: ${{ inputs.scd_jobs }}
 
+      - name: Register platform modules
+        if: ${{ inputs.setup_php && inputs.build_command == '' }}
+        run: |
+          php -r '
+          $path = "app/etc/config.php";
+          $config = file_exists($path) ? include $path : [];
+          if (!is_array($config)) { $config = []; }
+          if (!isset($config["modules"]) || !is_array($config["modules"])) { $config["modules"] = []; }
+          $config["modules"]["MageZero_OpensearchObservability"] = 1;
+          $config["modules"]["MageZero_CloudflareR2"] = 1;
+          file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
+          '
+
       - name: Generate OPcache preload file
         if: ${{ inputs.setup_php && inputs.build_command == '' }}
         run: |
