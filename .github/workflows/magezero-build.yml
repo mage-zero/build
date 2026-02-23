@@ -373,6 +373,30 @@ jobs:
             composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
           fi
           COMPOSER_MUTATED=1
+          # Platform cluster-friendly maintenance mode module (injected by MageZero)
+          LOCKED_MAINTENANCE_MODULE_VERSION=""
+          if [ -f composer.lock ]; then
+            LOCKED_MAINTENANCE_MODULE_VERSION="$(php -r '
+            $lock = @json_decode(@file_get_contents("composer.lock"), true);
+            if (!is_array($lock)) { exit(0); }
+            $packages = array_merge($lock["packages"] ?? [], $lock["packages-dev"] ?? []);
+            foreach ($packages as $pkg) {
+              if (($pkg["name"] ?? "") === "magezero/magento2-cluster-friendly-maintenance-mode") {
+                echo (string)($pkg["version"] ?? "");
+                exit(0);
+              }
+            }
+            ')"
+          fi
+          composer config repositories.magezero-cluster-maintenance vcs https://github.com/mage-zero/magento2-cluster-friendly-maintenance-mode.git
+          if [ -n "${LOCKED_MAINTENANCE_MODULE_VERSION}" ]; then
+            echo "magezero/magento2-cluster-friendly-maintenance-mode already installed (${LOCKED_MAINTENANCE_MODULE_VERSION}); updating to latest."
+            composer update magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+          else
+            echo "magezero/magento2-cluster-friendly-maintenance-mode not present in composer.lock; installing latest stable."
+            composer require magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
+          fi
+          COMPOSER_MUTATED=1
           php -r '
           $path = "app/etc/config.php";
           $config = file_exists($path) ? include $path : [];
@@ -380,6 +404,7 @@ jobs:
           if (!isset($config["modules"]) || !is_array($config["modules"])) { $config["modules"] = []; }
           $config["modules"]["MageZero_OpensearchObservability"] = 1;
           $config["modules"]["MageZero_CloudflareR2"] = 1;
+          $config["modules"]["MageZero_ClusterMaintenance"] = 1;
           file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
           '
           if [ "${COMPOSER_MUTATED}" -eq 0 ]; then
@@ -469,6 +494,7 @@ jobs:
           if (!isset($config["modules"]) || !is_array($config["modules"])) { $config["modules"] = []; }
           $config["modules"]["MageZero_OpensearchObservability"] = 1;
           $config["modules"]["MageZero_CloudflareR2"] = 1;
+          $config["modules"]["MageZero_ClusterMaintenance"] = 1;
           file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
           '
 
