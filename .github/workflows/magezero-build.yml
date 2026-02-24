@@ -52,6 +52,14 @@ on:
         required: false
         default: "2"
         type: string
+      module_disable:
+        description: >-
+          Space-separated Magento module names to disable before di:compile
+          (e.g. "Amasty_ImageOptimizer Amasty_PageSpeedOptimizer").
+          MageZero platform modules cannot be disabled.
+        required: false
+        default: ""
+        type: string
     secrets:
       COMPOSER_AUTH:
         required: false
@@ -240,7 +248,23 @@ jobs:
           set -e
           if [ -f app/etc/config.php ]; then
             cp app/etc/config.php app/etc/config.php.bak
-            trap 'mv app/etc/config.php.bak app/etc/config.php' EXIT
+            # On exit, selectively restore only the "scopes" key from the
+            # backup (it was injected temporarily for static-content:deploy).
+            # All other changes (MageZero modules, .magezero.json disables)
+            # are intentional and must survive into the packaged artifact.
+            trap 'php -r '"'"'
+              $cur = file_exists("app/etc/config.php") ? include "app/etc/config.php" : [];
+              $bak = file_exists("app/etc/config.php.bak") ? include "app/etc/config.php.bak" : [];
+              if (!is_array($cur)) { $cur = []; }
+              if (!is_array($bak)) { $bak = []; }
+              if (isset($bak["scopes"])) {
+                $cur["scopes"] = $bak["scopes"];
+              } else {
+                unset($cur["scopes"]);
+              }
+              file_put_contents("app/etc/config.php", "<?php\nreturn " . var_export($cur, true) . ";\n");
+              @unlink("app/etc/config.php.bak");
+            '"'"'' EXIT
           fi
           # Some locked Magento dependencies can be flagged by Packagist advisories.
           # Do not block artifact builds on advisory-only checks in CI.
@@ -407,6 +431,27 @@ jobs:
           $config["modules"]["MageZero_ClusterMaintenance"] = 1;
           file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
           '
+          # Disable customer-specified modules (from module_disable input).
+          # Validated: only Vendor_Module names allowed, MageZero_ modules protected.
+          # Runs before di:compile so disabled modules are excluded from compilation.
+          if [ -n "${MODULE_DISABLE}" ]; then
+            VALIDATED_MODULES=""
+            for mod in ${MODULE_DISABLE}; do
+              if ! printf '%s' "${mod}" | grep -Eq '^[A-Za-z0-9]+_[A-Za-z0-9]+$'; then
+                echo "module_disable: invalid module name '${mod}', skipping."
+                continue
+              fi
+              if printf '%s' "${mod}" | grep -Eq '^MageZero_'; then
+                echo "module_disable: refusing to disable platform module '${mod}'."
+                continue
+              fi
+              VALIDATED_MODULES="${VALIDATED_MODULES} ${mod}"
+            done
+            if [ -n "${VALIDATED_MODULES}" ]; then
+              echo "Disabling modules:${VALIDATED_MODULES}"
+              bin/magento module:disable ${VALIDATED_MODULES}
+            fi
+          fi
           if [ "${COMPOSER_MUTATED}" -eq 0 ]; then
             composer install --no-dev --prefer-dist
           fi
@@ -483,20 +528,7 @@ jobs:
           SCD_THEMES: ${{ inputs.scd_themes }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
           SCD_JOBS: ${{ inputs.scd_jobs }}
-
-      - name: Register platform modules
-        if: ${{ inputs.setup_php && inputs.build_command == '' }}
-        run: |
-          php -r '
-          $path = "app/etc/config.php";
-          $config = file_exists($path) ? include $path : [];
-          if (!is_array($config)) { $config = []; }
-          if (!isset($config["modules"]) || !is_array($config["modules"])) { $config["modules"] = []; }
-          $config["modules"]["MageZero_OpensearchObservability"] = 1;
-          $config["modules"]["MageZero_CloudflareR2"] = 1;
-          $config["modules"]["MageZero_ClusterMaintenance"] = 1;
-          file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
-          '
+          MODULE_DISABLE: ${{ inputs.module_disable }}
 
       - name: Generate OPcache preload file
         if: ${{ inputs.setup_php && inputs.build_command == '' }}
