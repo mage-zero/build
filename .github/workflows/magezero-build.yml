@@ -503,7 +503,11 @@ jobs:
             done
           fi
 
-          scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}")
+          # Generated templates in var/view_preprocessed can survive from earlier build steps
+          # and then get snapshotted into the runtime image. Always rebuild them from current sources.
+          rm -rf var/view_preprocessed
+
+          scd_cmd=(bin/magento setup:static-content:deploy -f --clear-static-content -j "${SCD_JOBS}")
           if [ "${SCD_NO_PARENT}" = "true" ]; then
             scd_cmd+=(--no-parent)
           fi
