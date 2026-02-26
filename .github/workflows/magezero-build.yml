@@ -586,16 +586,65 @@ jobs:
             composer install --no-dev --prefer-dist
           fi
           bin/magento setup:di:compile
-          # CI-only cleanup: keep synthetic admin virtual rows for di:compile, then remove the admin store row
-          # before SCD so WeltPixel storefront builds resolve the actual storefront store code (e.g. "default"),
-          # not "admin". Flush Magento caches afterwards so store metadata is reloaded from the adjusted CI DB.
-          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
-            docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
-              DELETE FROM store WHERE store_id = 0;
-              SELECT CONCAT('store_id_0_rows_after_scd_neutralize=', COUNT(*)) FROM store WHERE store_id=0;
-            "
+          clear_ci_magento_fs_caches() {
             rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
-          fi
+          }
+          ci_db_remove_admin_virtual_rows_for_frontend_scd() {
+            if [ -z "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+              return 0
+            fi
+            echo "CI DB prep for frontend SCD: removing synthetic admin virtual rows (id=0)"
+            docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+              SET FOREIGN_KEY_CHECKS=0;
+              DELETE FROM store WHERE store_id = 0 OR website_id = 0 OR group_id = 0;
+              DELETE FROM store_group WHERE group_id = 0 OR website_id = 0;
+              DELETE FROM store_website WHERE website_id = 0;
+              SET FOREIGN_KEY_CHECKS=1;
+              SELECT CONCAT('frontend_scd_store_website_id_0_rows=', COUNT(*)) FROM store_website WHERE website_id=0;
+              SELECT CONCAT('frontend_scd_store_group_id_0_rows=', COUNT(*)) FROM store_group WHERE group_id=0 OR website_id=0;
+              SELECT CONCAT('frontend_scd_store_id_0_rows=', COUNT(*)) FROM store WHERE store_id=0 OR website_id=0 OR group_id=0;
+            "
+            clear_ci_magento_fs_caches
+          }
+          ci_db_seed_admin_virtual_rows_for_adminhtml_scd() {
+            if [ -z "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+              return 0
+            fi
+            echo "CI DB prep for adminhtml SCD: seeding synthetic admin virtual rows (id=0)"
+            docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+              SET SESSION sql_mode = CONCAT_WS(',', @@sql_mode, 'NO_AUTO_VALUE_ON_ZERO');
+              SET FOREIGN_KEY_CHECKS=0;
+              INSERT INTO store_website (website_id, code, name, sort_order, default_group_id, is_default)
+                VALUES (0, '__mz_admin__', 'Admin', 0, 0, 0)
+                ON DUPLICATE KEY UPDATE
+                  code=VALUES(code),
+                  name=VALUES(name),
+                  sort_order=VALUES(sort_order),
+                  default_group_id=VALUES(default_group_id),
+                  is_default=VALUES(is_default);
+              INSERT INTO store_group (group_id, website_id, name, root_category_id, default_store_id)
+                VALUES (0, 0, 'Admin', 0, 0)
+                ON DUPLICATE KEY UPDATE
+                  website_id=VALUES(website_id),
+                  name=VALUES(name),
+                  root_category_id=VALUES(root_category_id),
+                  default_store_id=VALUES(default_store_id);
+              INSERT INTO store (store_id, code, website_id, group_id, name, sort_order, is_active)
+                VALUES (0, 'admin', 0, 0, 'Admin', 0, 1)
+                ON DUPLICATE KEY UPDATE
+                  code=VALUES(code),
+                  website_id=VALUES(website_id),
+                  group_id=VALUES(group_id),
+                  name=VALUES(name),
+                  sort_order=VALUES(sort_order),
+                  is_active=VALUES(is_active);
+              SET FOREIGN_KEY_CHECKS=1;
+              SELECT CONCAT('adminhtml_scd_store_website_id_0_rows=', COUNT(*)) FROM store_website WHERE website_id=0;
+              SELECT CONCAT('adminhtml_scd_store_group_id_0_rows=', COUNT(*)) FROM store_group WHERE group_id=0 OR website_id=0;
+              SELECT CONCAT('adminhtml_scd_store_id_0_rows=', COUNT(*)) FROM store WHERE store_id=0 OR website_id=0 OR group_id=0;
+            "
+            clear_ci_magento_fs_caches
+          }
           composer dump-autoload --optimize
           SCD_JOBS="${SCD_JOBS:-2}"
           SCD_LOCALES="${SCD_LOCALES:-}"
@@ -723,6 +772,11 @@ jobs:
             local use_store_override="$2"
             shift 2
             local -a area_themes=("$@")
+            if [ "${area}" = "frontend" ]; then
+              ci_db_remove_admin_virtual_rows_for_frontend_scd
+            elif [ "${area}" = "adminhtml" ]; then
+              ci_db_seed_admin_virtual_rows_for_adminhtml_scd
+            fi
             local -a scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}" --area "${area}")
             if [ "${scd_needs_clear}" = "true" ] && [ "${SCD_SUPPORTS_CLEAR}" = "true" ]; then
               scd_cmd+=(--clear-static-content)
