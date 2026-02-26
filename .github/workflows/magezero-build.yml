@@ -661,31 +661,115 @@ jobs:
             done
           fi
 
+          declare -a scd_locales=()
+          if [ -n "${SCD_LOCALES}" ]; then
+            read -r -a scd_locales <<< "${SCD_LOCALES}"
+          fi
+
+          declare -a scd_themes_frontend=()
+          declare -a scd_themes_adminhtml=()
+          if [ -n "${SCD_THEMES}" ]; then
+            for theme in ${SCD_THEMES}; do
+              theme_area=""
+              if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+                theme_area="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+                  SELECT area
+                  FROM theme
+                  WHERE theme_path='${theme}'
+                  ORDER BY theme_id DESC
+                  LIMIT 1;
+                " | tr -d '\r')"
+              fi
+              case "${theme_area}" in
+                adminhtml)
+                  scd_themes_adminhtml+=("${theme}")
+                  ;;
+                frontend)
+                  scd_themes_frontend+=("${theme}")
+                  ;;
+                *)
+                  if [ "${theme}" = "Magento/backend" ]; then
+                    scd_themes_adminhtml+=("${theme}")
+                  else
+                    echo "Warning: could not resolve theme area for ${theme}; defaulting to frontend."
+                    scd_themes_frontend+=("${theme}")
+                  fi
+                  ;;
+              esac
+            done
+            if [ "${#scd_themes_frontend[@]}" -gt 0 ]; then
+              echo "SCD frontend themes: ${scd_themes_frontend[*]}"
+            else
+              echo "SCD frontend themes: (none)"
+            fi
+            if [ "${#scd_themes_adminhtml[@]}" -gt 0 ]; then
+              echo "SCD adminhtml themes: ${scd_themes_adminhtml[*]}"
+            else
+              echo "SCD adminhtml themes: (none)"
+            fi
+          fi
+
           # Generated templates in var/view_preprocessed can survive from earlier build steps
           # and then get snapshotted into the runtime image. Always rebuild them from current sources.
           rm -rf var/view_preprocessed
 
-          scd_cmd=(bin/magento)
-          scd_cmd+=(setup:static-content:deploy -f -j "${SCD_JOBS}")
+          SCD_SUPPORTS_CLEAR="false"
           if bin/magento setup:static-content:deploy --help 2>&1 | grep -q -- '--clear-static-content'; then
-            scd_cmd+=(--clear-static-content)
+            SCD_SUPPORTS_CLEAR="true"
           fi
-          if [ "${SCD_NO_PARENT}" = "true" ]; then
-            scd_cmd+=(--no-parent)
-          fi
-          if [ -n "${SCD_THEMES}" ]; then
-            for theme in ${SCD_THEMES}; do
-              scd_cmd+=(--theme "${theme}")
+          scd_needs_clear="true"
+          run_scd_for_area() {
+            local area="$1"
+            local use_store_override="$2"
+            shift 2
+            local -a area_themes=("$@")
+            local -a scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}" --area "${area}")
+            if [ "${scd_needs_clear}" = "true" ] && [ "${SCD_SUPPORTS_CLEAR}" = "true" ]; then
+              scd_cmd+=(--clear-static-content)
+            fi
+            if [ "${SCD_NO_PARENT}" = "true" ]; then
+              scd_cmd+=(--no-parent)
+            fi
+            if [ "${#area_themes[@]}" -gt 0 ]; then
+              for theme in "${area_themes[@]}"; do
+                scd_cmd+=(--theme "${theme}")
+              done
+            fi
+            if [ "${#scd_locales[@]}" -gt 0 ]; then
+              scd_cmd+=("${scd_locales[@]}")
+            fi
+            printf 'Running SCD (%s):' "${area}"
+            for part in "${scd_cmd[@]}"; do
+              printf ' %q' "${part}"
             done
-          fi
-          if [ -n "${SCD_LOCALES}" ]; then
-            read -r -a scd_locales <<< "${SCD_LOCALES}"
-            scd_cmd+=("${scd_locales[@]}")
-          fi
-          if [ -n "${SCD_STORE_CODE}" ]; then
-            MAGE_RUN_TYPE=store MAGE_RUN_CODE="${SCD_STORE_CODE}" "${scd_cmd[@]}"
+            printf '\n'
+            if [ "${use_store_override}" = "true" ] && [ -n "${SCD_STORE_CODE}" ]; then
+              MAGE_RUN_TYPE=store MAGE_RUN_CODE="${SCD_STORE_CODE}" "${scd_cmd[@]}"
+            else
+              "${scd_cmd[@]}"
+            fi
+            scd_needs_clear="false"
+          }
+
+          ran_scd_area=0
+          if [ -n "${SCD_THEMES}" ]; then
+            if [ "${#scd_themes_frontend[@]}" -gt 0 ]; then
+              run_scd_for_area frontend true "${scd_themes_frontend[@]}"
+              ran_scd_area=$((ran_scd_area+1))
+            fi
+            if [ "${#scd_themes_adminhtml[@]}" -gt 0 ]; then
+              run_scd_for_area adminhtml false "${scd_themes_adminhtml[@]}"
+              ran_scd_area=$((ran_scd_area+1))
+            fi
+            if [ "${ran_scd_area}" -eq 0 ]; then
+              echo "No SCD theme targets remained after area split."
+              exit 1
+            fi
           else
-            "${scd_cmd[@]}"
+            run_scd_for_area frontend true
+            ran_scd_area=$((ran_scd_area+1))
+            run_scd_for_area adminhtml false
+            ran_scd_area=$((ran_scd_area+1))
           fi
 
           # Guardrail: admin UI depends on pub/static/adminhtml being present in the artifact.
