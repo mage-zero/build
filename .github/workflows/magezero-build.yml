@@ -594,10 +594,7 @@ jobs:
               DELETE FROM store WHERE store_id = 0;
               SELECT CONCAT('store_id_0_rows_after_scd_neutralize=', COUNT(*)) FROM store WHERE store_id=0;
             "
-            if ! bin/magento cache:flush; then
-              echo "cache:flush unavailable after CI admin-store neutralize; clearing filesystem caches instead."
-              rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
-            fi
+            rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
           fi
           composer dump-autoload --optimize
           SCD_JOBS="${SCD_JOBS:-2}"
