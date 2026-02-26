@@ -637,7 +637,10 @@ jobs:
           # and then get snapshotted into the runtime image. Always rebuild them from current sources.
           rm -rf var/view_preprocessed
 
-          scd_cmd=(bin/magento setup:static-content:deploy -f --clear-static-content -j "${SCD_JOBS}")
+          scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}")
+          if bin/magento setup:static-content:deploy --help 2>&1 | grep -q -- '--clear-static-content'; then
+            scd_cmd+=(--clear-static-content)
+          fi
           if [ "${SCD_NO_PARENT}" = "true" ]; then
             scd_cmd+=(--no-parent)
           fi
