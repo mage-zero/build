@@ -298,8 +298,8 @@ jobs:
           echo "" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Environment ID: $(jq -r '.environment_id' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Profile: $(jq -r '.profile' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Included tables: $(jq -r '.included_tables | join(\", \")' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
-          echo "- Skipped tables: $(jq -r '(.skipped_tables // []) | join(\", \")' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Included tables: $(jq -r '.included_tables | join(", ")' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Skipped tables: $(jq -r '(.skipped_tables // []) | join(", ")' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Redacted rows: $(jq -r '.redaction.redacted_rows // 0' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Redacted by path: $(jq -r '.redaction.redacted_rows_by_path // 0' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
           echo "- Redacted by value: $(jq -r '.redaction.redacted_rows_by_value // 0' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
@@ -322,9 +322,9 @@ jobs:
             exit 1
           fi
 
-          DB_CID="$(docker ps --format '{{.ID}} {{.Image}} {{.Names}}' | awk '/mariadb:10\\.5/ {print $1; exit}')"
+          DB_CID="${MZ_BUILD_DB_CONTAINER_ID}"
           if [ -z "${DB_CID}" ]; then
-            echo "MariaDB service container not found."
+            echo "MariaDB service container ID is missing."
             docker ps --format '{{.ID}} {{.Image}} {{.Names}}'
             exit 1
           fi
@@ -345,6 +345,7 @@ jobs:
             -e "SELECT CONCAT('core_config_data=', COUNT(*)) FROM core_config_data"
         env:
           SCD_DB_SNAPSHOT_PATH: ${{ env.SCD_DB_SNAPSHOT_PATH }}
+          MZ_BUILD_DB_CONTAINER_ID: ${{ job.services.mariadb.id }}
 
       - name: Cleanup SCD DB snapshot payload
         if: ${{ always() }}
