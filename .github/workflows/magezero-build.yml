@@ -219,6 +219,21 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    services:
+      mariadb:
+        image: mariadb:10.5
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: magento
+          MYSQL_USER: magento
+          MYSQL_PASSWORD: magento
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -243,100 +258,164 @@ jobs:
         if: ${{ inputs.setup_php }}
         run: php -v
 
+      - name: Fetch SCD DB snapshot
+        id: scd_db_snapshot
+        run: |
+          BASE_URL="${MZ_CONTROL_URL%/}"
+          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          PAYLOAD="$(jq -cn \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg ref "${GITHUB_REF}" \
+            --argjson environment_id "${TARGET_ENVIRONMENT_ID}" \
+            '{repository:$repository, ref:$ref, environment_id:$environment_id, profile:"scd-minimal-v1"}')"
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/scd-db-snapshot" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" || printf '\n000')"
+          RESPONSE_BODY="${RESPONSE%$'\n'*}"
+          RESPONSE_CODE="${RESPONSE##*$'\n'}"
+          if [ "${RESPONSE_CODE}" = "000" ] || [ "${RESPONSE_CODE}" -ge 300 ]; then
+            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+            exit 1
+          fi
+
+          SNAPSHOT_JSON="/tmp/mz-scd-db-snapshot.json"
+          SNAPSHOT_GZ="/tmp/mz-scd-db-snapshot.sql.gz"
+          printf '%s' "${RESPONSE_BODY}" > "${SNAPSHOT_JSON}"
+          jq -er '.sql_gz_base64' "${SNAPSHOT_JSON}" | base64 -d > "${SNAPSHOT_GZ}"
+
+          EXPECTED_SHA="$(jq -er '.sql_gz_sha256' "${SNAPSHOT_JSON}")"
+          ACTUAL_SHA="$(sha256sum "${SNAPSHOT_GZ}" | awk '{print $1}')"
+          if [ "${EXPECTED_SHA}" != "${ACTUAL_SHA}" ]; then
+            echo "Snapshot checksum mismatch."
+            exit 1
+          fi
+
+          echo "SCD_DB_SNAPSHOT_PATH=${SNAPSHOT_GZ}" >> "${GITHUB_ENV}"
+
+          echo "### SCD DB Snapshot" >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Environment ID: $(jq -r '.environment_id' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Profile: $(jq -r '.profile' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Included tables: $(jq -r '.included_tables | join(\", \")' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Skipped tables: $(jq -r '(.skipped_tables // []) | join(\", \")' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Redacted rows: $(jq -r '.redaction.redacted_rows // 0' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Redacted by path: $(jq -r '.redaction.redacted_rows_by_path // 0' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Redacted by value: $(jq -r '.redaction.redacted_rows_by_value // 0' "${SNAPSHOT_JSON}")" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- sql.gz size: $(du -h "${SNAPSHOT_GZ}" | awk '{print $1}')" >> "${GITHUB_STEP_SUMMARY}"
+          if command -v shred >/dev/null 2>&1; then
+            shred -u "${SNAPSHOT_JSON}" || rm -f "${SNAPSHOT_JSON}"
+          else
+            rm -f "${SNAPSHOT_JSON}"
+          fi
+          unset RESPONSE RESPONSE_BODY TOKEN PAYLOAD
+        env:
+          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          TARGET_ENVIRONMENT_ID: ${{ needs.prepare.outputs.target_0_id }}
+
+      - name: Import SCD DB snapshot into CI MariaDB
+        run: |
+          SNAPSHOT_GZ="${SCD_DB_SNAPSHOT_PATH}"
+          if [ ! -s "${SNAPSHOT_GZ}" ]; then
+            echo "Missing SCD DB snapshot at ${SNAPSHOT_GZ}"
+            exit 1
+          fi
+
+          DB_CID="$(docker ps --format '{{.ID}} {{.Image}} {{.Names}}' | awk '/mariadb:10\\.5/ {print $1; exit}')"
+          if [ -z "${DB_CID}" ]; then
+            echo "MariaDB service container not found."
+            docker ps --format '{{.ID}} {{.Image}} {{.Names}}'
+            exit 1
+          fi
+
+          for i in $(seq 1 60); do
+            if docker exec "${DB_CID}" mysqladmin ping -h 127.0.0.1 -uroot -proot --silent >/dev/null 2>&1; then
+              break
+            fi
+            if [ "${i}" -eq 60 ]; then
+              echo "MariaDB did not become ready in time."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          gzip -dc "${SNAPSHOT_GZ}" | docker exec -i "${DB_CID}" mariadb -umagento -pmagento magento
+          docker exec "${DB_CID}" mariadb -N -s -umagento -pmagento magento \
+            -e "SELECT CONCAT('core_config_data=', COUNT(*)) FROM core_config_data"
+        env:
+          SCD_DB_SNAPSHOT_PATH: ${{ env.SCD_DB_SNAPSHOT_PATH }}
+
+      - name: Cleanup SCD DB snapshot payload
+        if: ${{ always() }}
+        run: |
+          for f in /tmp/mz-scd-db-snapshot.json /tmp/mz-scd-db-snapshot.sql.gz; do
+            [ -f "${f}" ] || continue
+            if command -v shred >/dev/null 2>&1; then
+              shred -u "${f}" || rm -f "${f}"
+            else
+              rm -f "${f}"
+            fi
+          done
+          echo "SCD_DB_SNAPSHOT_PATH=" >> "${GITHUB_ENV}"
+
       - name: Build Magento artifact
         run: |
           set -e
-          if [ -f app/etc/config.php ]; then
-            cp app/etc/config.php app/etc/config.php.bak
-            # On exit, selectively restore only the "scopes" key from the
-            # backup (it was injected temporarily for static-content:deploy).
-            # All other changes (MageZero modules, .magezero.json disables)
-            # are intentional and must survive into the packaged artifact.
-            trap 'php -r '"'"'
-              $cur = file_exists("app/etc/config.php") ? include "app/etc/config.php" : [];
-              $bak = file_exists("app/etc/config.php.bak") ? include "app/etc/config.php.bak" : [];
-              if (!is_array($cur)) { $cur = []; }
-              if (!is_array($bak)) { $bak = []; }
-              if (isset($bak["scopes"])) {
-                $cur["scopes"] = $bak["scopes"];
-              } else {
-                unset($cur["scopes"]);
-              }
-              file_put_contents("app/etc/config.php", "<?php\nreturn " . var_export($cur, true) . ";\n");
-              @unlink("app/etc/config.php.bak");
-            '"'"'' EXIT
+          ENV_PATH="app/etc/env.php"
+          ENV_BAK_PATH=""
+          if [ -f "${ENV_PATH}" ]; then
+            ENV_BAK_PATH="${ENV_PATH}.mz-build.bak"
+            cp "${ENV_PATH}" "${ENV_BAK_PATH}"
           fi
+          cleanup_ci_env_php() {
+            if [ -n "${ENV_BAK_PATH}" ] && [ -f "${ENV_BAK_PATH}" ]; then
+              mv -f "${ENV_BAK_PATH}" "${ENV_PATH}"
+            else
+              rm -f "${ENV_PATH}"
+            fi
+          }
+          trap cleanup_ci_env_php EXIT
+          php -r '
+          $path = "app/etc/env.php";
+          $host = getenv("MZ_BUILD_DB_HOST") ?: "127.0.0.1";
+          $port = (string)(getenv("MZ_BUILD_DB_PORT") ?: "3306");
+          $dbName = getenv("MZ_BUILD_DB_NAME") ?: "magento";
+          $dbUser = getenv("MZ_BUILD_DB_USER") ?: "magento";
+          $dbPass = getenv("MZ_BUILD_DB_PASSWORD") ?: "magento";
+          $cryptKey = bin2hex(random_bytes(16));
+          $env = [
+            "backend" => ["frontName" => "admin"],
+            "crypt" => ["key" => $cryptKey],
+            "db" => [
+              "table_prefix" => "",
+              "connection" => [
+                "default" => [
+                  "host" => $host,
+                  "port" => $port,
+                  "dbname" => $dbName,
+                  "username" => $dbUser,
+                  "password" => $dbPass,
+                  "model" => "mysql4",
+                  "engine" => "innodb",
+                  "initStatements" => "SET NAMES utf8;",
+                  "active" => "1",
+                  "driver_options" => [1014 => false],
+                ],
+              ],
+            ],
+            "resource" => ["default_setup" => ["connection" => "default"]],
+            "cache_types" => ["compiled_config" => 1],
+            "MAGE_MODE" => "developer",
+          ];
+          if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
+          file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
+          '
           # Some locked Magento dependencies can be flagged by Packagist advisories.
           # Do not block artifact builds on advisory-only checks in CI.
           if ! composer config --global audit.block-insecure false; then
             echo "Warning: failed to set composer audit.block-insecure=false globally."
           fi
-          php -r '
-          $path = "app/etc/config.php";
-          $config = file_exists($path) ? include $path : [];
-          if (!is_array($config)) { $config = []; }
-          if (!isset($config["scopes"])) {
-            $config["scopes"] = [
-              "websites" => [
-                "admin" => [
-                  "website_id" => "0",
-                  "code" => "admin",
-                  "name" => "Admin",
-                  "sort_order" => "0",
-                  "default_group_id" => "0",
-                  "is_default" => "0",
-                ],
-                "base" => [
-                  "website_id" => "1",
-                  "code" => "base",
-                  "name" => "Default",
-                  "sort_order" => "0",
-                  "default_group_id" => "1",
-                  "is_default" => "1",
-                ],
-              ],
-              "stores" => [
-                "admin" => [
-                  "store_id" => "0",
-                  "code" => "admin",
-                  "website_id" => "0",
-                  "group_id" => "0",
-                  "name" => "Admin",
-                  "sort_order" => "0",
-                  "is_active" => "1",
-                ],
-                "default" => [
-                  "store_id" => "1",
-                  "code" => "default",
-                  "website_id" => "1",
-                  "group_id" => "1",
-                  "name" => "Default",
-                  "sort_order" => "1",
-                  "is_active" => "1",
-                ],
-              ],
-              "groups" => [
-                0 => [
-                  "group_id" => "0",
-                  "website_id" => "0",
-                  "name" => "Admin",
-                  "root_category_id" => "0",
-                  "default_store_id" => "0",
-                  "code" => "default",
-                ],
-                1 => [
-                  "group_id" => "1",
-                  "website_id" => "1",
-                  "name" => "Default",
-                  "root_category_id" => "1",
-                  "default_store_id" => "1",
-                  "code" => "default",
-                ],
-              ],
-            ];
-          }
-          file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
-          '
           if [ -n "${BUILD_COMMAND_OVERRIDE}" ]; then
             echo "Running build_command override."
             printf '%s\n' "${BUILD_COMMAND_OVERRIDE}" > /tmp/mz-build-override.sh
@@ -528,6 +607,11 @@ jobs:
           COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
           BUILD_COMMAND_OVERRIDE: ${{ inputs.build_command }}
           EXTRA_BUILD_COMMAND: ${{ inputs.extra_build_command }}
+          MZ_BUILD_DB_HOST: 127.0.0.1
+          MZ_BUILD_DB_PORT: "3306"
+          MZ_BUILD_DB_NAME: magento
+          MZ_BUILD_DB_USER: magento
+          MZ_BUILD_DB_PASSWORD: magento
           SCD_LOCALES: ${{ inputs.scd_locales }}
           SCD_THEMES: ${{ inputs.scd_themes }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
