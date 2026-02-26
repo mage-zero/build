@@ -381,6 +381,10 @@ jobs:
           $path = "app/etc/env.php";
           $host = getenv("MZ_BUILD_DB_HOST") ?: "127.0.0.1";
           $port = (string)(getenv("MZ_BUILD_DB_PORT") ?: "3306");
+          $hostWithPort = $host;
+          if ($port !== "" && strpos($host, ":") === false && strpos($host, "/") !== 0) {
+            $hostWithPort = $host . ":" . $port;
+          }
           $dbName = getenv("MZ_BUILD_DB_NAME") ?: "magento";
           $dbUser = getenv("MZ_BUILD_DB_USER") ?: "magento";
           $dbPass = getenv("MZ_BUILD_DB_PASSWORD") ?: "magento";
@@ -392,8 +396,7 @@ jobs:
               "table_prefix" => "",
               "connection" => [
                 "default" => [
-                  "host" => $host,
-                  "port" => $port,
+                  "host" => $hostWithPort,
                   "dbname" => $dbName,
                   "username" => $dbUser,
                   "password" => $dbPass,
