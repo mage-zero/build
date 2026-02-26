@@ -412,6 +412,7 @@ jobs:
           set -e
           ENV_PATH="app/etc/env.php"
           ENV_BAK_PATH=""
+          SCD_PREPEND_PATH=""
           if [ -f "${ENV_PATH}" ]; then
             ENV_BAK_PATH="${ENV_PATH}.mz-build.bak"
             cp "${ENV_PATH}" "${ENV_BAK_PATH}"
@@ -421,6 +422,9 @@ jobs:
               mv -f "${ENV_BAK_PATH}" "${ENV_PATH}"
             else
               rm -f "${ENV_PATH}"
+            fi
+            if [ -n "${SCD_PREPEND_PATH}" ] && [ -f "${SCD_PREPEND_PATH}" ]; then
+              rm -f "${SCD_PREPEND_PATH}"
             fi
           }
           trap cleanup_ci_env_php EXIT
@@ -709,6 +713,42 @@ jobs:
             fi
           fi
 
+          # Build-only shim: seed store-selection hints before Magento boots for frontend SCD.
+          # This is temporary and removed by the step cleanup trap.
+          SCD_PREPEND_PATH="/tmp/mz-scd-prepend.php"
+          cat > "${SCD_PREPEND_PATH}" <<'PHP'
+          <?php
+          if (PHP_SAPI !== 'cli') {
+              return;
+          }
+          $argv = $_SERVER['argv'] ?? null;
+          if (!is_array($argv) || !$argv) {
+              return;
+          }
+          $cmd = implode(' ', array_map('strval', $argv));
+          if (strpos($cmd, 'setup:static-content:deploy') === false) {
+              return;
+          }
+          $storeCode = getenv('MZ_SCD_STORE_CODE');
+          if (!is_string($storeCode) || $storeCode === '') {
+              return;
+          }
+          $targetArea = getenv('MZ_SCD_TARGET_AREA');
+          if (is_string($targetArea) && $targetArea !== '' && $targetArea !== 'frontend') {
+              return;
+          }
+          putenv('MAGE_RUN_TYPE=store');
+          putenv('MAGE_RUN_CODE=' . $storeCode);
+          $_SERVER['MAGE_RUN_TYPE'] = 'store';
+          $_SERVER['MAGE_RUN_CODE'] = $storeCode;
+          $_ENV['MAGE_RUN_TYPE'] = 'store';
+          $_ENV['MAGE_RUN_CODE'] = $storeCode;
+          $_GET['store'] = $storeCode;
+          $_REQUEST['store'] = $storeCode;
+          $_GET['generation_store_code'] = $storeCode;
+          $_REQUEST['generation_store_code'] = $storeCode;
+          PHP
+
           # Generated templates in var/view_preprocessed can survive from earlier build steps
           # and then get snapshotted into the runtime image. Always rebuild them from current sources.
           rm -rf var/view_preprocessed
@@ -744,7 +784,16 @@ jobs:
             done
             printf '\n'
             if [ "${use_store_override}" = "true" ] && [ -n "${SCD_STORE_CODE}" ]; then
-              MAGE_RUN_TYPE=store MAGE_RUN_CODE="${SCD_STORE_CODE}" "${scd_cmd[@]}"
+              if [ -n "${SCD_PREPEND_PATH:-}" ] && [ -f "${SCD_PREPEND_PATH}" ]; then
+                echo "Using SCD prepend shim: ${SCD_PREPEND_PATH}"
+                MAGE_RUN_TYPE=store \
+                MAGE_RUN_CODE="${SCD_STORE_CODE}" \
+                MZ_SCD_STORE_CODE="${SCD_STORE_CODE}" \
+                MZ_SCD_TARGET_AREA="${area}" \
+                php -d "auto_prepend_file=${SCD_PREPEND_PATH}" "${scd_cmd[@]}"
+              else
+                MAGE_RUN_TYPE=store MAGE_RUN_CODE="${SCD_STORE_CODE}" "${scd_cmd[@]}"
+              fi
             else
               "${scd_cmd[@]}"
             fi
