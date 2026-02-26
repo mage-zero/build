@@ -586,6 +586,16 @@ jobs:
             composer install --no-dev --prefer-dist
           fi
           bin/magento setup:di:compile
+          # CI-only cleanup: keep synthetic admin virtual rows for di:compile, then remove the admin store row
+          # before SCD so WeltPixel storefront builds resolve the actual storefront store code (e.g. "default"),
+          # not "admin". Flush Magento caches afterwards so store metadata is reloaded from the adjusted CI DB.
+          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+            docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+              DELETE FROM store WHERE store_id = 0;
+              SELECT CONCAT('store_id_0_rows_after_scd_neutralize=', COUNT(*)) FROM store WHERE store_id=0;
+            "
+            bin/magento cache:flush
+          fi
           composer dump-autoload --optimize
           SCD_JOBS="${SCD_JOBS:-2}"
           SCD_LOCALES="${SCD_LOCALES:-}"
@@ -666,6 +676,7 @@ jobs:
           MZ_BUILD_DB_NAME: magento
           MZ_BUILD_DB_USER: magento
           MZ_BUILD_DB_PASSWORD: magento
+          MZ_BUILD_DB_CONTAINER_ID: ${{ job.services.mariadb.id }}
           SCD_LOCALES: ${{ inputs.scd_locales }}
           SCD_THEMES: ${{ inputs.scd_themes }}
           SCD_NO_PARENT: ${{ inputs.scd_no_parent }}
