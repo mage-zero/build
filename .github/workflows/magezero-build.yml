@@ -341,14 +341,38 @@ jobs:
           done
 
           gzip -dc "${SNAPSHOT_GZ}" | docker exec -i "${DB_CID}" mariadb -umagento -pmagento magento
-          # CI-only normalization: Magento's admin "website/store" (id 0) is virtual.
-          # Some extensions iterate DB stores during compile and incorrectly call WebsiteRepository->getById(0),
-          # which explodes because store_website has no row id=0. Prune admin virtual-scope rows from the
-          # imported CI snapshot to keep build-time compilation generic without mutating app/etc/config.php.
+          # CI-only normalization: seed synthetic admin virtual-scope rows (id 0) in the ephemeral CI DB.
+          # Some extensions call WebsiteRepository->getById(0) during compile when iterating admin store scope.
+          # Production Magento models this virtually; adding consistent id=0 rows in CI avoids reintroducing
+          # app/etc/config.php scope hacks while keeping the build database ephemeral.
           docker exec "${DB_CID}" mariadb -umagento -pmagento magento -e "
-            DELETE FROM core_config_data WHERE (scope='stores' AND scope_id=0) OR (scope='websites' AND scope_id=0);
-            DELETE FROM store WHERE store_id=0 OR website_id=0;
-            DELETE FROM store_group WHERE group_id=0 OR website_id=0;
+            SET SESSION sql_mode = CONCAT_WS(',', @@sql_mode, 'NO_AUTO_VALUE_ON_ZERO');
+            SET FOREIGN_KEY_CHECKS=0;
+            INSERT INTO store_website (website_id, code, name, sort_order, default_group_id, is_default)
+              VALUES (0, 'admin', 'Admin', 0, 0, 0)
+              ON DUPLICATE KEY UPDATE
+                code=VALUES(code),
+                name=VALUES(name),
+                sort_order=VALUES(sort_order),
+                default_group_id=VALUES(default_group_id),
+                is_default=VALUES(is_default);
+            INSERT INTO store_group (group_id, website_id, name, root_category_id, default_store_id)
+              VALUES (0, 0, 'Admin', 0, 0)
+              ON DUPLICATE KEY UPDATE
+                website_id=VALUES(website_id),
+                name=VALUES(name),
+                root_category_id=VALUES(root_category_id),
+                default_store_id=VALUES(default_store_id);
+            INSERT INTO store (store_id, code, website_id, group_id, name, sort_order, is_active)
+              VALUES (0, 'admin', 0, 0, 'Admin', 0, 1)
+              ON DUPLICATE KEY UPDATE
+                code=VALUES(code),
+                website_id=VALUES(website_id),
+                group_id=VALUES(group_id),
+                name=VALUES(name),
+                sort_order=VALUES(sort_order),
+                is_active=VALUES(is_active);
+            SET FOREIGN_KEY_CHECKS=1;
           "
           docker exec "${DB_CID}" mariadb -N -s -umagento -pmagento magento -e "
             SELECT CONCAT('core_config_data=', COUNT(*)) FROM core_config_data;
@@ -362,6 +386,7 @@ jobs:
             SELECT CONCAT('admin_scope_cfg_rows=', COUNT(*))
               FROM core_config_data
               WHERE (scope='stores' AND scope_id=0) OR (scope='websites' AND scope_id=0);
+            SELECT CONCAT('store_website_id_0_rows=', COUNT(*)) FROM store_website WHERE website_id=0;
             SELECT CONCAT('store_id_0_rows=', COUNT(*)) FROM store WHERE store_id=0 OR website_id=0;
             SELECT CONCAT('store_group_id_0_rows=', COUNT(*)) FROM store_group WHERE group_id=0 OR website_id=0;
           "
