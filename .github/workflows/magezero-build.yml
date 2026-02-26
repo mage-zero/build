@@ -601,7 +601,7 @@ jobs:
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
           SCD_NO_PARENT="${SCD_NO_PARENT:-false}"
-          SCD_BOOTSTRAP_ARG=""
+          SCD_STORE_CODE=""
           if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
             SCD_STORE_CODE="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
               SELECT s.code
@@ -615,9 +615,8 @@ jobs:
             " | tr -d '\r')"
             if [ -n "${SCD_STORE_CODE}" ]; then
               echo "Using storefront store code for SCD bootstrap: ${SCD_STORE_CODE}"
-              SCD_BOOTSTRAP_ARG="--bootstrap=MAGE_RUN_TYPE=store&MAGE_RUN_CODE=${SCD_STORE_CODE}"
             else
-              echo "Warning: could not resolve storefront store code from CI DB snapshot; running SCD without bootstrap override."
+              echo "Warning: could not resolve storefront store code from CI DB snapshot; running SCD without store override."
             fi
           fi
 
@@ -667,9 +666,6 @@ jobs:
           rm -rf var/view_preprocessed
 
           scd_cmd=(bin/magento)
-          if [ -n "${SCD_BOOTSTRAP_ARG}" ]; then
-            scd_cmd+=("${SCD_BOOTSTRAP_ARG}")
-          fi
           scd_cmd+=(setup:static-content:deploy -f -j "${SCD_JOBS}")
           if bin/magento setup:static-content:deploy --help 2>&1 | grep -q -- '--clear-static-content'; then
             scd_cmd+=(--clear-static-content)
@@ -686,7 +682,11 @@ jobs:
             read -r -a scd_locales <<< "${SCD_LOCALES}"
             scd_cmd+=("${scd_locales[@]}")
           fi
-          "${scd_cmd[@]}"
+          if [ -n "${SCD_STORE_CODE}" ]; then
+            MAGE_RUN_TYPE=store MAGE_RUN_CODE="${SCD_STORE_CODE}" "${scd_cmd[@]}"
+          else
+            "${scd_cmd[@]}"
+          fi
 
           # Guardrail: admin UI depends on pub/static/adminhtml being present in the artifact.
           test -d pub/static/adminhtml
