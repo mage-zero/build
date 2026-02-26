@@ -601,6 +601,25 @@ jobs:
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
           SCD_NO_PARENT="${SCD_NO_PARENT:-false}"
+          SCD_BOOTSTRAP_ARG=""
+          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+            SCD_STORE_CODE="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+              SELECT s.code
+              FROM store s
+              INNER JOIN store_group g ON g.group_id = s.group_id
+              INNER JOIN store_website w ON w.website_id = s.website_id
+              WHERE s.store_id <> 0
+                AND s.is_active = 1
+              ORDER BY w.is_default DESC, s.sort_order ASC, s.store_id ASC
+              LIMIT 1;
+            " | tr -d '\r')"
+            if [ -n "${SCD_STORE_CODE}" ]; then
+              echo "Using storefront store code for SCD bootstrap: ${SCD_STORE_CODE}"
+              SCD_BOOTSTRAP_ARG="--bootstrap=MAGE_RUN_TYPE=store&MAGE_RUN_CODE=${SCD_STORE_CODE}"
+            else
+              echo "Warning: could not resolve storefront store code from CI DB snapshot; running SCD without bootstrap override."
+            fi
+          fi
 
           # Hard validation to prevent clients from injecting arbitrary CLI flags.
           # Only expose structured inputs: locales, themes, jobs, and explicit booleans.
@@ -647,7 +666,11 @@ jobs:
           # and then get snapshotted into the runtime image. Always rebuild them from current sources.
           rm -rf var/view_preprocessed
 
-          scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}")
+          scd_cmd=(bin/magento)
+          if [ -n "${SCD_BOOTSTRAP_ARG}" ]; then
+            scd_cmd+=("${SCD_BOOTSTRAP_ARG}")
+          fi
+          scd_cmd+=(setup:static-content:deploy -f -j "${SCD_JOBS}")
           if bin/magento setup:static-content:deploy --help 2>&1 | grep -q -- '--clear-static-content'; then
             scd_cmd+=(--clear-static-content)
           fi
