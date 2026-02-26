@@ -349,7 +349,7 @@ jobs:
             SET SESSION sql_mode = CONCAT_WS(',', @@sql_mode, 'NO_AUTO_VALUE_ON_ZERO');
             SET FOREIGN_KEY_CHECKS=0;
             INSERT INTO store_website (website_id, code, name, sort_order, default_group_id, is_default)
-              VALUES (0, 'admin', 'Admin', 0, 0, 0)
+              VALUES (0, '__mz_admin__', 'Admin', 0, 0, 0)
               ON DUPLICATE KEY UPDATE
                 code=VALUES(code),
                 name=VALUES(name),
