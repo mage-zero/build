@@ -341,8 +341,30 @@ jobs:
           done
 
           gzip -dc "${SNAPSHOT_GZ}" | docker exec -i "${DB_CID}" mariadb -umagento -pmagento magento
-          docker exec "${DB_CID}" mariadb -N -s -umagento -pmagento magento \
-            -e "SELECT CONCAT('core_config_data=', COUNT(*)) FROM core_config_data"
+          # CI-only normalization: Magento's admin "website/store" (id 0) is virtual.
+          # Some extensions iterate DB stores during compile and incorrectly call WebsiteRepository->getById(0),
+          # which explodes because store_website has no row id=0. Prune admin virtual-scope rows from the
+          # imported CI snapshot to keep build-time compilation generic without mutating app/etc/config.php.
+          docker exec "${DB_CID}" mariadb -umagento -pmagento magento -e "
+            DELETE FROM core_config_data WHERE (scope='stores' AND scope_id=0) OR (scope='websites' AND scope_id=0);
+            DELETE FROM store WHERE store_id=0 OR website_id=0;
+            DELETE FROM store_group WHERE group_id=0 OR website_id=0;
+          "
+          docker exec "${DB_CID}" mariadb -N -s -umagento -pmagento magento -e "
+            SELECT CONCAT('core_config_data=', COUNT(*)) FROM core_config_data;
+            SELECT CONCAT('store_website=', COUNT(*)) FROM store_website;
+            SELECT CONCAT('store_group=', COUNT(*)) FROM store_group;
+            SELECT CONCAT('store=', COUNT(*)) FROM store;
+            SELECT CONCAT('theme=', COUNT(*)) FROM theme;
+            SELECT CONCAT('translation_table_present=', COUNT(*))
+              FROM information_schema.tables
+              WHERE table_schema = DATABASE() AND table_name = 'translation';
+            SELECT CONCAT('admin_scope_cfg_rows=', COUNT(*))
+              FROM core_config_data
+              WHERE (scope='stores' AND scope_id=0) OR (scope='websites' AND scope_id=0);
+            SELECT CONCAT('store_id_0_rows=', COUNT(*)) FROM store WHERE store_id=0 OR website_id=0;
+            SELECT CONCAT('store_group_id_0_rows=', COUNT(*)) FROM store_group WHERE group_id=0 OR website_id=0;
+          "
         env:
           SCD_DB_SNAPSHOT_PATH: ${{ env.SCD_DB_SNAPSHOT_PATH }}
           MZ_BUILD_DB_CONTAINER_ID: ${{ job.services.mariadb.id }}
