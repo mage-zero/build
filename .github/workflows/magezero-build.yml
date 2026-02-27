@@ -269,16 +269,33 @@ jobs:
             --arg ref "${GITHUB_REF}" \
             --argjson environment_id "${TARGET_ENVIRONMENT_ID}" \
             '{repository:$repository, ref:$ref, environment_id:$environment_id, profile:"scd-minimal-v1"}')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/scd-db-snapshot" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "${PAYLOAD}" || printf '\n000')"
-          RESPONSE_BODY="${RESPONSE%$'\n'*}"
-          RESPONSE_CODE="${RESPONSE##*$'\n'}"
-          if [ "${RESPONSE_CODE}" = "000" ] || [ "${RESPONSE_CODE}" -ge 300 ]; then
+          MAX_ATTEMPTS="${MZ_SCD_SNAPSHOT_MAX_ATTEMPTS:-5}"
+          ATTEMPT=1
+          while :; do
+            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/scd-db-snapshot" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "${PAYLOAD}" || printf '\n000')"
+            RESPONSE_BODY="${RESPONSE%$'\n'*}"
+            RESPONSE_CODE="${RESPONSE##*$'\n'}"
+
+            if [ "${RESPONSE_CODE}" -lt 300 ]; then
+              break
+            fi
+
+            if [ "${RESPONSE_CODE}" = "000" ] || [ "${RESPONSE_CODE}" = "429" ] || [ "${RESPONSE_CODE}" -ge 500 ]; then
+              if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
+                SLEEP_SECONDS=$((ATTEMPT * 2))
+                echo "mz-control transient snapshot error (${RESPONSE_CODE}) attempt ${ATTEMPT}/${MAX_ATTEMPTS}; retrying in ${SLEEP_SECONDS}s"
+                sleep "${SLEEP_SECONDS}"
+                ATTEMPT=$((ATTEMPT + 1))
+                continue
+              fi
+            fi
+
             echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
             exit 1
-          fi
+          done
 
           SNAPSHOT_JSON="/tmp/mz-scd-db-snapshot.json"
           SNAPSHOT_GZ="/tmp/mz-scd-db-snapshot.sql.gz"
