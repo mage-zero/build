@@ -838,6 +838,68 @@ jobs:
             ran_scd_area=$((ran_scd_area+1))
           fi
 
+          # Some themes can emit locale-specific SCD warnings and skip only a subset
+          # of CSS files (for example, styles-l.css/styles-m.css for one locale).
+          # Reconcile missing locale variants from another successfully built locale
+          # for the same theme so storefront requests do not 404.
+          reconcile_frontend_styles_locales() {
+            if [ "${#scd_themes_frontend[@]}" -eq 0 ]; then
+              return 0
+            fi
+            if [ "${#scd_locales[@]}" -lt 2 ]; then
+              return 0
+            fi
+
+            local unresolved=0
+            for theme in "${scd_themes_frontend[@]}"; do
+              local vendor="${theme%%/*}"
+              local name="${theme##*/}"
+              local theme_root="pub/static/frontend/${vendor}/${name}"
+              if [ ! -d "${theme_root}" ]; then
+                echo "ERROR: frontend static root missing for theme ${theme}: ${theme_root}"
+                unresolved=$((unresolved + 1))
+                continue
+              fi
+
+              for locale in "${scd_locales[@]}"; do
+                for sheet in styles-l.css styles-m.css; do
+                  local target="${theme_root}/${locale}/css/${sheet}"
+                  if [ -f "${target}" ]; then
+                    continue
+                  fi
+
+                  local donor=""
+                  for candidate in "${scd_locales[@]}"; do
+                    if [ "${candidate}" = "${locale}" ]; then
+                      continue
+                    fi
+                    local candidate_path="${theme_root}/${candidate}/css/${sheet}"
+                    if [ -f "${candidate_path}" ]; then
+                      donor="${candidate_path}"
+                      break
+                    fi
+                  done
+
+                  if [ -n "${donor}" ]; then
+                    mkdir -p "$(dirname "${target}")"
+                    cp "${donor}" "${target}"
+                    echo "Warning: ${target} missing after SCD; copied from ${donor}."
+                  else
+                    echo "ERROR: ${target} missing after SCD and no donor locale produced ${sheet}."
+                    unresolved=$((unresolved + 1))
+                  fi
+                done
+              done
+            done
+
+            if [ "${unresolved}" -gt 0 ]; then
+              echo "Static CSS locale reconciliation failed (${unresolved} unresolved file(s))."
+              exit 1
+            fi
+          }
+
+          reconcile_frontend_styles_locales
+
           # Guardrail: admin UI depends on pub/static/adminhtml being present in the artifact.
           test -d pub/static/adminhtml
         env:
