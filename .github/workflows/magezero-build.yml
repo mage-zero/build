@@ -743,6 +743,27 @@ jobs:
           }
           PHP
           }
+          has_composer_script() {
+            local script_name="$1"
+            SCRIPT_NAME="${script_name}" php <<'PHP'
+          <?php
+          $composer = @json_decode(@file_get_contents("composer.json"), true);
+          $script = getenv("SCRIPT_NAME") ?: "";
+          if (!is_array($composer) || !isset($composer["scripts"]) || !is_array($composer["scripts"])) {
+            exit(1);
+          }
+          exit(array_key_exists($script, $composer["scripts"]) ? 0 : 1);
+          PHP
+          }
+          run_root_composer_scripts_once() {
+            if has_composer_script post-update-cmd; then
+              echo "Running root composer post-update-cmd once after MageZero package mutations."
+              composer run-script --no-dev post-update-cmd
+            elif has_composer_script post-install-cmd; then
+              echo "Running root composer post-install-cmd once after MageZero package mutations."
+              composer run-script --no-dev post-install-cmd
+            fi
+          }
           trap cleanup_ci_build_files EXIT
           write_ci_env_php_with_db
           # Some locked Magento dependencies can be flagged by Packagist advisories.
@@ -780,10 +801,10 @@ jobs:
           composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
           if [ -n "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ]; then
             echo "mage-zero/magento2-opensearch-observability already installed (${LOCKED_OBSERVABILITY_MODULE_VERSION}); updating to latest."
-            composer update mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+            composer update mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts
           else
             echo "mage-zero/magento2-opensearch-observability not present in composer.lock; installing latest stable."
-            composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
+            composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
           fi
           COMPOSER_MUTATED=1
           # Platform R2 storage module (injected by MageZero)
@@ -804,10 +825,10 @@ jobs:
           composer config repositories.magezero-cloudflare-r2-storage vcs https://github.com/mage-zero/magento2-cloudflare-r2-storage.git
           if [ -n "${LOCKED_R2_MODULE_VERSION}" ]; then
             echo "magezero/magento2-cloudflare-r2-storage already installed (${LOCKED_R2_MODULE_VERSION}); updating to latest."
-            composer update magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+            composer update magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts
           else
             echo "magezero/magento2-cloudflare-r2-storage not present in composer.lock; installing latest stable."
-            composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
+            composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
           fi
           COMPOSER_MUTATED=1
           # Platform cluster-friendly maintenance mode module (injected by MageZero)
@@ -828,12 +849,15 @@ jobs:
           composer config repositories.magezero-cluster-maintenance vcs https://github.com/mage-zero/magento2-cluster-friendly-maintenance-mode.git
           if [ -n "${LOCKED_MAINTENANCE_MODULE_VERSION}" ]; then
             echo "magezero/magento2-cluster-friendly-maintenance-mode already installed (${LOCKED_MAINTENANCE_MODULE_VERSION}); updating to latest."
-            composer update magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --no-dev --prefer-dist
+            composer update magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts
           else
             echo "magezero/magento2-cluster-friendly-maintenance-mode not present in composer.lock; installing latest stable."
-            composer require magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist
+            composer require magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
           fi
           COMPOSER_MUTATED=1
+          if [ "${COMPOSER_MUTATED}" -eq 1 ]; then
+            run_root_composer_scripts_once
+          fi
           php -r '
           $path = "app/etc/config.php";
           $config = file_exists($path) ? include $path : [];
