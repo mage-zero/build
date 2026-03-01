@@ -571,12 +571,7 @@ jobs:
           $compatDir = getenv('COMPAT_DIR');
           $config = file_exists('app/etc/config.php') ? include 'app/etc/config.php' : [];
           $enabledModules = array_keys(array_filter($config['modules'] ?? []));
-          $commandList = shell_exec('bin/magento list --raw 2>&1') ?? '';
-          if (strpos($commandList, 'list') === false) {
-              echo "Module compat: WARNING: bin/magento list failed or returned unexpected output\n";
-              // Dump first 500 chars for debugging
-              echo "  Output: " . substr($commandList, 0, 500) . "\n";
-          }
+          $commandList = shell_exec('bin/magento list --raw 2>/dev/null') ?? '';
           $storeCodes = null; // lazy-loaded
           $ran = 0;
 
@@ -632,7 +627,7 @@ jobs:
                                   [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
                               );
                               $stmt = $pdo->query(
-                                  "SELECT code FROM store WHERE is_active = 1 AND store_id > 0 ORDER BY store_id"
+                                  "SELECT code FROM store WHERE is_active = 1 AND store_id > 0 AND code != 'admin' ORDER BY store_id"
                               );
                               $storeCodes = $stmt->fetchAll(PDO::FETCH_COLUMN);
                           } catch (Exception $e) {
