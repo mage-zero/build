@@ -1,0 +1,16 @@
+{
+  "description": "WeltPixel Pearl theme: generate LESS/CSS from database config before static content deploy",
+  "hooks": {
+    "pre_scd": [
+      {
+        "run": "php -d memory_limit=-1 bin/magento weltpixel:less:generate",
+        "check_command": "weltpixel:less:generate"
+      },
+      {
+        "run": "php -d memory_limit=-1 bin/magento weltpixel:css:generate --store=${store_code}",
+        "check_command": "weltpixel:css:generate",
+        "foreach_store": true
+      }
+    ]
+  }
+}
