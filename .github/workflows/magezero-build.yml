@@ -500,6 +500,7 @@ jobs:
           $env["resource"] = ["default_setup" => ["connection" => "default"]];
           $env["cache_types"] = isset($env["cache_types"]) && is_array($env["cache_types"]) ? $env["cache_types"] : [];
           $env["cache_types"]["compiled_config"] = 1;
+          $env["install"] = ["date" => date("r")];
           $env["MAGE_MODE"] = "developer";
           if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
           file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
