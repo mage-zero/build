@@ -500,7 +500,6 @@ jobs:
           $env["resource"] = ["default_setup" => ["connection" => "default"]];
           $env["cache_types"] = isset($env["cache_types"]) && is_array($env["cache_types"]) ? $env["cache_types"] : [];
           $env["cache_types"]["compiled_config"] = 1;
-          $env["install"] = ["date" => date("r")];
           $env["MAGE_MODE"] = "developer";
           if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
           file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
@@ -824,6 +823,17 @@ jobs:
           fi
           bin/magento setup:di:compile
           composer dump-autoload --optimize
+
+          # Mark env.php as "installed" so Magento CLI loads module-provided commands
+          # (e.g. weltpixel:less:generate). Must be AFTER di:compile — with install/date
+          # set, di:compile tries to query eav tables that don't exist in the CI DB.
+          php -r '
+            $path = "app/etc/env.php";
+            $env = file_exists($path) ? include $path : [];
+            $env["install"] = ["date" => date("r")];
+            file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
+          '
+
           SCD_JOBS="${SCD_JOBS:-2}"
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
