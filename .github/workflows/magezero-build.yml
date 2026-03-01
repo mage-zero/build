@@ -523,6 +523,191 @@ jobs:
           file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
           PHP
           }
+          write_temp_scd_config_from_db() {
+            CONFIG_PATH="${CONFIG_PATH}" \
+            MZ_BUILD_DB_HOST="${MZ_BUILD_DB_HOST}" \
+            MZ_BUILD_DB_PORT="${MZ_BUILD_DB_PORT}" \
+            MZ_BUILD_DB_NAME="${MZ_BUILD_DB_NAME}" \
+            MZ_BUILD_DB_USER="${MZ_BUILD_DB_USER}" \
+            MZ_BUILD_DB_PASSWORD="${MZ_BUILD_DB_PASSWORD}" \
+            php <<'PHP'
+          <?php
+          $path = getenv("CONFIG_PATH") ?: "app/etc/config.php";
+          $host = getenv("MZ_BUILD_DB_HOST") ?: "127.0.0.1";
+          $port = (string)(getenv("MZ_BUILD_DB_PORT") ?: "3306");
+          $dbName = getenv("MZ_BUILD_DB_NAME") ?: "magento";
+          $dbUser = getenv("MZ_BUILD_DB_USER") ?: "magento";
+          $dbPass = getenv("MZ_BUILD_DB_PASSWORD") ?: "magento";
+
+          $config = file_exists($path) ? include $path : [];
+          if (!is_array($config)) {
+              $config = [];
+          }
+
+          $dsn = sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8', $host, $port, $dbName);
+          $pdo = new PDO(
+              $dsn,
+              $dbUser,
+              $dbPass,
+              [
+                  PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                  PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+              ]
+          );
+
+          $normalizeRow = static function (array $row): array {
+              foreach ($row as $key => $value) {
+                  if ($value === null) {
+                      continue;
+                  }
+                  $row[$key] = (string)$value;
+              }
+              return $row;
+          };
+
+          $insertPath = static function (array &$target, string $path, string $value): void {
+              $segments = array_values(array_filter(explode('/', $path), 'strlen'));
+              if (!$segments) {
+                  return;
+              }
+              $cursor =& $target;
+              foreach ($segments as $index => $segment) {
+                  if ($index === count($segments) - 1) {
+                      $cursor[$segment] = $value;
+                      return;
+                  }
+                  if (!isset($cursor[$segment]) || !is_array($cursor[$segment])) {
+                      $cursor[$segment] = [];
+                  }
+                  $cursor =& $cursor[$segment];
+              }
+          };
+
+          $websites = [
+              'admin' => [
+                  'website_id' => '0',
+                  'code' => 'admin',
+                  'name' => 'Admin',
+                  'sort_order' => '0',
+                  'default_group_id' => '0',
+                  'is_default' => '0',
+              ],
+          ];
+          foreach ($pdo->query('SELECT website_id, code, name, sort_order, default_group_id, is_default FROM store_website ORDER BY website_id') as $row) {
+              $websites[(string)$row['code']] = $normalizeRow($row);
+          }
+
+          $groups = [
+              0 => [
+                  'group_id' => '0',
+                  'website_id' => '0',
+                  'code' => 'default',
+                  'name' => 'Default',
+                  'root_category_id' => '0',
+                  'default_store_id' => '0',
+              ],
+          ];
+          foreach ($pdo->query('SELECT group_id, website_id, code, name, root_category_id, default_store_id FROM store_group ORDER BY group_id') as $row) {
+              $groups[(int)$row['group_id']] = $normalizeRow($row);
+          }
+
+          $stores = [
+              'admin' => [
+                  'store_id' => '0',
+                  'code' => 'admin',
+                  'website_id' => '0',
+                  'group_id' => '0',
+                  'name' => 'Admin',
+                  'sort_order' => '0',
+                  'is_active' => '1',
+              ],
+          ];
+          foreach ($pdo->query('SELECT store_id, code, website_id, group_id, name, sort_order, is_active FROM store ORDER BY store_id') as $row) {
+              $stores[(string)$row['code']] = $normalizeRow($row);
+          }
+
+          $rawThemes = [];
+          foreach ($pdo->query('SELECT theme_id, parent_id, theme_path, theme_title, is_featured, area, type, code, preview_image FROM theme ORDER BY theme_id') as $row) {
+              $rawThemes[(int)$row['theme_id']] = $row;
+          }
+          $themes = [];
+          $themePathsById = [];
+          foreach ($rawThemes as $themeId => $row) {
+              $themePathsById[$themeId] = $row['area'] . '/' . $row['theme_path'];
+          }
+          foreach ($rawThemes as $themeId => $row) {
+              unset($row['theme_id'], $row['preview_image']);
+              $themePath = $row['area'] . '/' . $row['theme_path'];
+              $themeData = $normalizeRow($row);
+              $parentId = $row['parent_id'];
+              if ($parentId !== null && $parentId !== '' && isset($rawThemes[(int)$parentId]['code'])) {
+                  $themeData['parent_id'] = (string)$rawThemes[(int)$parentId]['code'];
+              }
+              $themes[$themePath] = $themeData;
+          }
+
+          $websiteCodes = [0 => 'admin'];
+          foreach ($websites as $code => $row) {
+              $websiteCodes[(int)$row['website_id']] = (string)$code;
+          }
+          $groupCodes = [0 => 'default'];
+          foreach ($groups as $key => $row) {
+              $groupCodes[(int)$row['group_id']] = (string)($row['code'] ?? $key);
+          }
+          $storeCodes = [0 => 'admin'];
+          foreach ($stores as $code => $row) {
+              $storeCodes[(int)$row['store_id']] = (string)$code;
+          }
+
+          $system = [];
+          foreach ($pdo->query('SELECT scope, scope_id, path, value FROM core_config_data ORDER BY config_id') as $row) {
+              $scope = (string)$row['scope'];
+              $scopeId = (int)$row['scope_id'];
+              $configPath = (string)$row['path'];
+              $value = (string)$row['value'];
+
+              if ($configPath === 'design/theme/theme_id' && is_numeric($value) && isset($themePathsById[(int)$value])) {
+                  $value = $themePathsById[(int)$value];
+              }
+
+              if ($scope === 'default') {
+                  if (!isset($system['default']) || !is_array($system['default'])) {
+                      $system['default'] = [];
+                  }
+                  $insertPath($system['default'], $configPath, $value);
+                  continue;
+              }
+
+              $scopeCode = null;
+              if ($scope === 'websites') {
+                  $scopeCode = $websiteCodes[$scopeId] ?? null;
+              } elseif ($scope === 'groups') {
+                  $scopeCode = $groupCodes[$scopeId] ?? null;
+              } elseif ($scope === 'stores') {
+                  $scopeCode = $storeCodes[$scopeId] ?? null;
+              }
+              if ($scopeCode === null || $scopeCode === '') {
+                  continue;
+              }
+              if (!isset($system[$scope][$scopeCode]) || !is_array($system[$scope][$scopeCode])) {
+                  $system[$scope][$scopeCode] = [];
+              }
+              $insertPath($system[$scope][$scopeCode], $configPath, $value);
+          }
+
+          $config['scopes'] = [
+              'websites' => $websites,
+              'groups' => $groups,
+              'stores' => $stores,
+          ];
+          $config['themes'] = $themes;
+          $config['system'] = $system;
+          unset($config['i18n']);
+
+          if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
+          file_put_contents($path, "<?php\nreturn " . var_export($config, true) . ";\n");
+          PHP
+          }
           cleanup_ci_build_files() {
             if [ -n "${ENV_BAK_PATH}" ] && [ -f "${ENV_BAK_PATH}" ]; then
               mv -f "${ENV_BAK_PATH}" "${ENV_PATH}"
@@ -779,25 +964,30 @@ jobs:
             fi
           fi
 
-          # Dump native deployment config from the CI snapshot DB, then drop the DB connection
-          # so frontend SCD resolves from the dumped config.php/env.php state instead of live DB state.
-          declare -a dump_config_types=(system scopes themes)
-          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
-            translation_table_present="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
-              SELECT COUNT(*)
-              FROM information_schema.tables
-              WHERE table_schema = DATABASE() AND table_name = 'translation';
-            " | tr -d '\r')"
-            if [ "${translation_table_present}" = "1" ]; then
-              dump_config_types+=(i18n)
+          # Dump deployment config from the CI snapshot DB, then drop the DB connection
+          # so frontend SCD resolves from temporary config.php/env.php state instead of live DB state.
+          if bin/magento help app:config:dump >/dev/null 2>&1; then
+            declare -a dump_config_types=(system scopes themes)
+            if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+              translation_table_present="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name = 'translation';
+              " | tr -d '\r')"
+              if [ "${translation_table_present}" = "1" ]; then
+                dump_config_types+=(i18n)
+              fi
             fi
+            printf 'Running app:config:dump:'
+            for part in "${dump_config_types[@]}"; do
+              printf ' %q' "${part}"
+            done
+            printf '\n'
+            bin/magento app:config:dump "${dump_config_types[@]}"
+          else
+            echo "app:config:dump unavailable; exporting temporary deployment config directly from CI snapshot DB."
+            write_temp_scd_config_from_db
           fi
-          printf 'Running app:config:dump:'
-          for part in "${dump_config_types[@]}"; do
-            printf ' %q' "${part}"
-          done
-          printf '\n'
-          bin/magento app:config:dump "${dump_config_types[@]}"
           write_ci_env_php_without_db
           rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
 
