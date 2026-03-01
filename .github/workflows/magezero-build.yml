@@ -572,6 +572,22 @@ jobs:
           $config = file_exists('app/etc/config.php') ? include 'app/etc/config.php' : [];
           $enabledModules = array_keys(array_filter($config['modules'] ?? []));
           $commandList = shell_exec('bin/magento list --raw 2>/dev/null') ?? '';
+          // Debug: check if weltpixel commands are in list output
+          $wpLines = array_filter(explode("\n", $commandList), function($l) { return stripos($l, 'weltpixel') !== false; });
+          if (!empty($wpLines)) {
+              echo "  weltpixel commands in list: " . implode(', ', array_map('trim', $wpLines)) . "\n";
+          } else {
+              echo "  weltpixel commands in list: NONE\n";
+              // Check compiled DI
+              $globalMeta = 'generated/metadata/global.php';
+              if (file_exists($globalMeta)) {
+                  $content = file_get_contents($globalMeta);
+                  echo "  generated/metadata/global.php exists (" . strlen($content) . " bytes)\n";
+                  echo "  contains generateLessCommand: " . (strpos($content, 'generateLessCommand') !== false ? 'YES' : 'NO') . "\n";
+              } else {
+                  echo "  generated/metadata/global.php: NOT FOUND\n";
+              }
+          }
           $storeCodes = null; // lazy-loaded
           $ran = 0;
 
