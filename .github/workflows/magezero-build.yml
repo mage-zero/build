@@ -358,39 +358,6 @@ jobs:
           done
 
           gzip -dc "${SNAPSHOT_GZ}" | docker exec -i "${DB_CID}" mariadb -umagento -pmagento magento
-          # CI-only normalization: seed synthetic admin virtual-scope rows (id 0) in the ephemeral CI DB.
-          # Some extensions call WebsiteRepository->getById(0) during compile when iterating admin store scope.
-          # Production Magento models this virtually; adding consistent id=0 rows in CI avoids reintroducing
-          # app/etc/config.php scope hacks while keeping the build database ephemeral.
-          docker exec "${DB_CID}" mariadb -umagento -pmagento magento -e "
-            SET SESSION sql_mode = CONCAT_WS(',', @@sql_mode, 'NO_AUTO_VALUE_ON_ZERO');
-            SET FOREIGN_KEY_CHECKS=0;
-            INSERT INTO store_website (website_id, code, name, sort_order, default_group_id, is_default)
-              VALUES (0, '__mz_admin__', 'Admin', 0, 0, 0)
-              ON DUPLICATE KEY UPDATE
-                code=VALUES(code),
-                name=VALUES(name),
-                sort_order=VALUES(sort_order),
-                default_group_id=VALUES(default_group_id),
-                is_default=VALUES(is_default);
-            INSERT INTO store_group (group_id, website_id, name, root_category_id, default_store_id)
-              VALUES (0, 0, 'Admin', 0, 0)
-              ON DUPLICATE KEY UPDATE
-                website_id=VALUES(website_id),
-                name=VALUES(name),
-                root_category_id=VALUES(root_category_id),
-                default_store_id=VALUES(default_store_id);
-            INSERT INTO store (store_id, code, website_id, group_id, name, sort_order, is_active)
-              VALUES (0, 'admin', 0, 0, 'Admin', 0, 1)
-              ON DUPLICATE KEY UPDATE
-                code=VALUES(code),
-                website_id=VALUES(website_id),
-                group_id=VALUES(group_id),
-                name=VALUES(name),
-                sort_order=VALUES(sort_order),
-                is_active=VALUES(is_active);
-            SET FOREIGN_KEY_CHECKS=1;
-          "
           docker exec "${DB_CID}" mariadb -N -s -umagento -pmagento magento -e "
             SELECT CONCAT('core_config_data=', COUNT(*)) FROM core_config_data;
             SELECT CONCAT('store_website=', COUNT(*)) FROM store_website;
@@ -403,9 +370,6 @@ jobs:
             SELECT CONCAT('admin_scope_cfg_rows=', COUNT(*))
               FROM core_config_data
               WHERE (scope='stores' AND scope_id=0) OR (scope='websites' AND scope_id=0);
-            SELECT CONCAT('store_website_id_0_rows=', COUNT(*)) FROM store_website WHERE website_id=0;
-            SELECT CONCAT('store_id_0_rows=', COUNT(*)) FROM store WHERE store_id=0 OR website_id=0;
-            SELECT CONCAT('store_group_id_0_rows=', COUNT(*)) FROM store_group WHERE group_id=0 OR website_id=0;
           "
         env:
           SCD_DB_SNAPSHOT_PATH: ${{ env.SCD_DB_SNAPSHOT_PATH }}
@@ -429,24 +393,30 @@ jobs:
           set -e
           ENV_PATH="app/etc/env.php"
           ENV_BAK_PATH=""
-          SCD_PREPEND_PATH=""
+          CONFIG_PATH="app/etc/config.php"
+          CONFIG_BAK_PATH=""
+          MZ_BUILD_CRYPT_KEY="$(php -r 'echo bin2hex(random_bytes(16));')"
           if [ -f "${ENV_PATH}" ]; then
             ENV_BAK_PATH="${ENV_PATH}.mz-build.bak"
             cp "${ENV_PATH}" "${ENV_BAK_PATH}"
           fi
-          cleanup_ci_env_php() {
-            if [ -n "${ENV_BAK_PATH}" ] && [ -f "${ENV_BAK_PATH}" ]; then
-              mv -f "${ENV_BAK_PATH}" "${ENV_PATH}"
-            else
-              rm -f "${ENV_PATH}"
-            fi
-            if [ -n "${SCD_PREPEND_PATH}" ] && [ -f "${SCD_PREPEND_PATH}" ]; then
-              rm -f "${SCD_PREPEND_PATH}"
-            fi
-          }
-          trap cleanup_ci_env_php EXIT
-          php -r '
-          $path = "app/etc/env.php";
+          if [ -f "${CONFIG_PATH}" ]; then
+            CONFIG_BAK_PATH="${CONFIG_PATH}.mz-build.bak"
+            cp "${CONFIG_PATH}" "${CONFIG_BAK_PATH}"
+          fi
+          write_ci_env_php_with_db() {
+            ENV_PATH="${ENV_PATH}" \
+            ENV_TEMPLATE_PATH="${ENV_BAK_PATH}" \
+            MZ_BUILD_DB_HOST="${MZ_BUILD_DB_HOST}" \
+            MZ_BUILD_DB_PORT="${MZ_BUILD_DB_PORT}" \
+            MZ_BUILD_DB_NAME="${MZ_BUILD_DB_NAME}" \
+            MZ_BUILD_DB_USER="${MZ_BUILD_DB_USER}" \
+            MZ_BUILD_DB_PASSWORD="${MZ_BUILD_DB_PASSWORD}" \
+            MZ_BUILD_CRYPT_KEY="${MZ_BUILD_CRYPT_KEY}" \
+            php <<'PHP'
+          <?php
+          $path = getenv("ENV_PATH") ?: "app/etc/env.php";
+          $templatePath = getenv("ENV_TEMPLATE_PATH") ?: "";
           $host = getenv("MZ_BUILD_DB_HOST") ?: "127.0.0.1";
           $port = (string)(getenv("MZ_BUILD_DB_PORT") ?: "3306");
           $hostWithPort = $host;
@@ -456,33 +426,105 @@ jobs:
           $dbName = getenv("MZ_BUILD_DB_NAME") ?: "magento";
           $dbUser = getenv("MZ_BUILD_DB_USER") ?: "magento";
           $dbPass = getenv("MZ_BUILD_DB_PASSWORD") ?: "magento";
-          $cryptKey = bin2hex(random_bytes(16));
-          $env = [
-            "backend" => ["frontName" => "admin"],
-            "crypt" => ["key" => $cryptKey],
-            "db" => [
-              "table_prefix" => "",
-              "connection" => [
-                "default" => [
-                  "host" => $hostWithPort,
-                  "dbname" => $dbName,
-                  "username" => $dbUser,
-                  "password" => $dbPass,
-                  "model" => "mysql4",
-                  "engine" => "innodb",
-                  "initStatements" => "SET NAMES utf8;",
-                  "active" => "1",
-                  "driver_options" => [1014 => false],
-                ],
+          $cryptKey = getenv("MZ_BUILD_CRYPT_KEY") ?: bin2hex(random_bytes(16));
+          $env = ($templatePath !== "" && file_exists($templatePath)) ? include $templatePath : [];
+          if (!is_array($env)) { $env = []; }
+          $env["backend"] = isset($env["backend"]) && is_array($env["backend"]) ? $env["backend"] : [];
+          if (!isset($env["backend"]["frontName"]) || !is_string($env["backend"]["frontName"]) || $env["backend"]["frontName"] === "") {
+            $env["backend"]["frontName"] = "admin";
+          }
+          $env["crypt"] = isset($env["crypt"]) && is_array($env["crypt"]) ? $env["crypt"] : [];
+          if (!isset($env["crypt"]["key"]) || !is_string($env["crypt"]["key"]) || $env["crypt"]["key"] === "") {
+            $env["crypt"]["key"] = $cryptKey;
+          }
+          $env["db"] = [
+            "table_prefix" => "",
+            "connection" => [
+              "default" => [
+                "host" => $hostWithPort,
+                "dbname" => $dbName,
+                "username" => $dbUser,
+                "password" => $dbPass,
+                "model" => "mysql4",
+                "engine" => "innodb",
+                "initStatements" => "SET NAMES utf8;",
+                "active" => "1",
+                "driver_options" => [1014 => false],
               ],
             ],
-            "resource" => ["default_setup" => ["connection" => "default"]],
-            "cache_types" => ["compiled_config" => 1],
-            "MAGE_MODE" => "developer",
           ];
+          $env["resource"] = ["default_setup" => ["connection" => "default"]];
+          $env["cache_types"] = isset($env["cache_types"]) && is_array($env["cache_types"]) ? $env["cache_types"] : [];
+          $env["cache_types"]["compiled_config"] = 1;
+          $env["MAGE_MODE"] = "developer";
           if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
           file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
-          '
+          PHP
+          }
+          write_ci_env_php_without_db() {
+            ENV_PATH="${ENV_PATH}" \
+            ENV_TEMPLATE_PATH="${ENV_BAK_PATH}" \
+            MZ_BUILD_CRYPT_KEY="${MZ_BUILD_CRYPT_KEY}" \
+            php <<'PHP'
+          <?php
+          $path = getenv("ENV_PATH") ?: "app/etc/env.php";
+          $templatePath = getenv("ENV_TEMPLATE_PATH") ?: "";
+          $cryptKey = getenv("MZ_BUILD_CRYPT_KEY") ?: bin2hex(random_bytes(16));
+          $env = ($templatePath !== "" && file_exists($templatePath)) ? include $templatePath : [];
+          if (!is_array($env)) { $env = []; }
+          unset($env["db"], $env["resource"]);
+          $env["backend"] = isset($env["backend"]) && is_array($env["backend"]) ? $env["backend"] : [];
+          if (!isset($env["backend"]["frontName"]) || !is_string($env["backend"]["frontName"]) || $env["backend"]["frontName"] === "") {
+            $env["backend"]["frontName"] = "admin";
+          }
+          $env["crypt"] = isset($env["crypt"]) && is_array($env["crypt"]) ? $env["crypt"] : [];
+          if (!isset($env["crypt"]["key"]) || !is_string($env["crypt"]["key"]) || $env["crypt"]["key"] === "") {
+            $env["crypt"]["key"] = $cryptKey;
+          }
+          $env["cache_types"] = isset($env["cache_types"]) && is_array($env["cache_types"]) ? $env["cache_types"] : [];
+          $env["cache_types"]["compiled_config"] = 1;
+          $env["MAGE_MODE"] = "developer";
+          if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
+          file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
+          PHP
+          }
+          cleanup_ci_build_files() {
+            if [ -n "${ENV_BAK_PATH}" ] && [ -f "${ENV_BAK_PATH}" ]; then
+              mv -f "${ENV_BAK_PATH}" "${ENV_PATH}"
+            else
+              rm -f "${ENV_PATH}"
+            fi
+            CONFIG_PATH="${CONFIG_PATH}" \
+            CONFIG_BAK_PATH="${CONFIG_BAK_PATH}" \
+            php <<'PHP'
+          <?php
+          $path = getenv("CONFIG_PATH") ?: "app/etc/config.php";
+          $bakPath = getenv("CONFIG_BAK_PATH") ?: "";
+          $pathExists = file_exists($path);
+          $bakExists = ($bakPath !== "" && file_exists($bakPath));
+          if (!$pathExists && !$bakExists) {
+            exit(0);
+          }
+          $current = file_exists($path) ? include $path : [];
+          $backup = $bakExists ? include $bakPath : [];
+          if (!is_array($current)) { $current = []; }
+          if (!is_array($backup)) { $backup = []; }
+          foreach (["scopes", "themes", "system", "i18n"] as $key) {
+            if (array_key_exists($key, $backup)) {
+              $current[$key] = $backup[$key];
+            } else {
+              unset($current[$key]);
+            }
+          }
+          if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
+          file_put_contents($path, "<?php\nreturn " . var_export($current, true) . ";\n");
+          if ($bakExists) {
+            @unlink($bakPath);
+          }
+          PHP
+          }
+          trap cleanup_ci_build_files EXIT
+          write_ci_env_php_with_db
           # Some locked Magento dependencies can be flagged by Packagist advisories.
           # Do not block artifact builds on advisory-only checks in CI.
           if ! composer config --global audit.block-insecure false; then
@@ -607,39 +649,11 @@ jobs:
             composer install --no-dev --prefer-dist
           fi
           bin/magento setup:di:compile
-          # CI-only cleanup: keep synthetic admin virtual rows for di:compile, then remove the admin store row
-          # before SCD so WeltPixel storefront builds resolve the actual storefront store code (e.g. "default"),
-          # not "admin". Flush Magento caches afterwards so store metadata is reloaded from the adjusted CI DB.
-          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
-            docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
-              DELETE FROM store WHERE store_id = 0;
-              SELECT CONCAT('store_id_0_rows_after_scd_neutralize=', COUNT(*)) FROM store WHERE store_id=0;
-            "
-            rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
-          fi
           composer dump-autoload --optimize
           SCD_JOBS="${SCD_JOBS:-2}"
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
           SCD_NO_PARENT="${SCD_NO_PARENT:-false}"
-          SCD_STORE_CODE=""
-          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
-            SCD_STORE_CODE="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
-              SELECT s.code
-              FROM store s
-              INNER JOIN store_group g ON g.group_id = s.group_id
-              INNER JOIN store_website w ON w.website_id = s.website_id
-              WHERE s.store_id <> 0
-                AND s.is_active = 1
-              ORDER BY w.is_default DESC, s.sort_order ASC, s.store_id ASC
-              LIMIT 1;
-            " | tr -d '\r')"
-            if [ -n "${SCD_STORE_CODE}" ]; then
-              echo "Using storefront store code for SCD bootstrap: ${SCD_STORE_CODE}"
-            else
-              echo "Warning: could not resolve storefront store code from CI DB snapshot; running SCD without store override."
-            fi
-          fi
 
           # Hard validation to prevent clients from injecting arbitrary CLI flags.
           # Only expose structured inputs: locales, themes, jobs, and explicit booleans.
@@ -730,41 +744,27 @@ jobs:
             fi
           fi
 
-          # Build-only shim: seed store-selection hints before Magento boots for frontend SCD.
-          # This is temporary and removed by the step cleanup trap.
-          SCD_PREPEND_PATH="/tmp/mz-scd-prepend.php"
-          cat > "${SCD_PREPEND_PATH}" <<'PHP'
-          <?php
-          if (PHP_SAPI !== 'cli') {
-              return;
-          }
-          $argv = $_SERVER['argv'] ?? null;
-          if (!is_array($argv) || !$argv) {
-              return;
-          }
-          $cmd = implode(' ', array_map('strval', $argv));
-          if (strpos($cmd, 'setup:static-content:deploy') === false) {
-              return;
-          }
-          $storeCode = getenv('MZ_SCD_STORE_CODE');
-          if (!is_string($storeCode) || $storeCode === '') {
-              return;
-          }
-          $targetArea = getenv('MZ_SCD_TARGET_AREA');
-          if (is_string($targetArea) && $targetArea !== '' && $targetArea !== 'frontend') {
-              return;
-          }
-          putenv('MAGE_RUN_TYPE=store');
-          putenv('MAGE_RUN_CODE=' . $storeCode);
-          $_SERVER['MAGE_RUN_TYPE'] = 'store';
-          $_SERVER['MAGE_RUN_CODE'] = $storeCode;
-          $_ENV['MAGE_RUN_TYPE'] = 'store';
-          $_ENV['MAGE_RUN_CODE'] = $storeCode;
-          $_GET['store'] = $storeCode;
-          $_REQUEST['store'] = $storeCode;
-          $_GET['generation_store_code'] = $storeCode;
-          $_REQUEST['generation_store_code'] = $storeCode;
-          PHP
+          # Dump native deployment config from the CI snapshot DB, then drop the DB connection
+          # so frontend SCD resolves from the dumped config.php/env.php state instead of live DB state.
+          declare -a dump_config_types=(system scopes themes)
+          if [ -n "${MZ_BUILD_DB_CONTAINER_ID:-}" ]; then
+            translation_table_present="$(docker exec "${MZ_BUILD_DB_CONTAINER_ID}" mariadb -N -s -umagento -pmagento magento -e "
+              SELECT COUNT(*)
+              FROM information_schema.tables
+              WHERE table_schema = DATABASE() AND table_name = 'translation';
+            " | tr -d '\r')"
+            if [ "${translation_table_present}" = "1" ]; then
+              dump_config_types+=(i18n)
+            fi
+          fi
+          printf 'Running app:config:dump:'
+          for part in "${dump_config_types[@]}"; do
+            printf ' %q' "${part}"
+          done
+          printf '\n'
+          bin/magento app:config:dump "${dump_config_types[@]}"
+          write_ci_env_php_without_db
+          rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
 
           # Generated templates in var/view_preprocessed can survive from earlier build steps
           # and then get snapshotted into the runtime image. Always rebuild them from current sources.
@@ -777,8 +777,7 @@ jobs:
           scd_needs_clear="true"
           run_scd_for_area() {
             local area="$1"
-            local use_store_override="$2"
-            shift 2
+            shift
             local -a area_themes=("$@")
             local -a scd_cmd=(bin/magento setup:static-content:deploy -f -j "${SCD_JOBS}" --area "${area}")
             if [ "${scd_needs_clear}" = "true" ] && [ "${SCD_SUPPORTS_CLEAR}" = "true" ]; then
@@ -800,31 +799,18 @@ jobs:
               printf ' %q' "${part}"
             done
             printf '\n'
-            if [ "${use_store_override}" = "true" ] && [ -n "${SCD_STORE_CODE}" ]; then
-              if [ -n "${SCD_PREPEND_PATH:-}" ] && [ -f "${SCD_PREPEND_PATH}" ]; then
-                echo "Using SCD prepend shim: ${SCD_PREPEND_PATH}"
-                MAGE_RUN_TYPE=store \
-                MAGE_RUN_CODE="${SCD_STORE_CODE}" \
-                MZ_SCD_STORE_CODE="${SCD_STORE_CODE}" \
-                MZ_SCD_TARGET_AREA="${area}" \
-                php -d "auto_prepend_file=${SCD_PREPEND_PATH}" "${scd_cmd[@]}"
-              else
-                MAGE_RUN_TYPE=store MAGE_RUN_CODE="${SCD_STORE_CODE}" "${scd_cmd[@]}"
-              fi
-            else
-              "${scd_cmd[@]}"
-            fi
+            "${scd_cmd[@]}"
             scd_needs_clear="false"
           }
 
           ran_scd_area=0
           if [ -n "${SCD_THEMES}" ]; then
             if [ "${#scd_themes_frontend[@]}" -gt 0 ]; then
-              run_scd_for_area frontend true "${scd_themes_frontend[@]}"
+              run_scd_for_area frontend "${scd_themes_frontend[@]}"
               ran_scd_area=$((ran_scd_area+1))
             fi
             if [ "${#scd_themes_adminhtml[@]}" -gt 0 ]; then
-              run_scd_for_area adminhtml false "${scd_themes_adminhtml[@]}"
+              run_scd_for_area adminhtml "${scd_themes_adminhtml[@]}"
               ran_scd_area=$((ran_scd_area+1))
             fi
             if [ "${ran_scd_area}" -eq 0 ]; then
@@ -832,9 +818,9 @@ jobs:
               exit 1
             fi
           else
-            run_scd_for_area frontend true
+            run_scd_for_area frontend
             ran_scd_area=$((ran_scd_area+1))
-            run_scd_for_area adminhtml false
+            run_scd_for_area adminhtml
             ran_scd_area=$((ran_scd_area+1))
           fi
 
