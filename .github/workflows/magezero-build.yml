@@ -571,7 +571,12 @@ jobs:
           $compatDir = getenv('COMPAT_DIR');
           $config = file_exists('app/etc/config.php') ? include 'app/etc/config.php' : [];
           $enabledModules = array_keys(array_filter($config['modules'] ?? []));
-          $commandList = shell_exec('bin/magento list --raw 2>/dev/null') ?? '';
+          $commandList = shell_exec('bin/magento list --raw 2>&1') ?? '';
+          if (strpos($commandList, 'list') === false) {
+              echo "Module compat: WARNING: bin/magento list failed or returned unexpected output\n";
+              // Dump first 500 chars for debugging
+              echo "  Output: " . substr($commandList, 0, 500) . "\n";
+          }
           $storeCodes = null; // lazy-loaded
           $ran = 0;
 
