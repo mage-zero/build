@@ -3,10 +3,10 @@
   "hooks": {
     "pre_scd": [
       {
-        "run": "php -d memory_limit=-1 bin/magento weltpixel:less:generate"
+        "run": "php -d memory_limit=-1 .mz-build/module-compat/scripts/weltpixel-less-generate.php"
       },
       {
-        "run": "php -d memory_limit=-1 bin/magento weltpixel:css:generate --store=${store_code}",
+        "run": "php -d memory_limit=-1 .mz-build/module-compat/scripts/weltpixel-css-generate.php ${store_code}",
         "foreach_store": true
       }
     ]
