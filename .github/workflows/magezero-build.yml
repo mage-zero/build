@@ -917,14 +917,16 @@ jobs:
             fi
           fi
 
+          # Run module compat hooks before clearing caches — commands like
+          # weltpixel:less:generate need the compiled DI + config cache to bootstrap.
+          run_module_compat_hook "pre_scd"
+
           # DB connection stays active — SCD reads stores/themes/system config directly from CI DB.
           rm -rf var/cache/* var/page_cache/* var/tmp/* 2>/dev/null || true
 
           # Generated templates in var/view_preprocessed can survive from earlier build steps
           # and then get snapshotted into the runtime image. Always rebuild them from current sources.
           rm -rf var/view_preprocessed
-
-          run_module_compat_hook "pre_scd"
 
           SCD_SUPPORTS_CLEAR="false"
           if bin/magento setup:static-content:deploy --help 2>&1 | grep -q -- '--clear-static-content'; then
