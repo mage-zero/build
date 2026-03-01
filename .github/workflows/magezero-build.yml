@@ -241,7 +241,7 @@ jobs:
       - name: Fetch module compat patches
         uses: actions/checkout@v4
         with:
-          repository: MageZero/build
+          repository: mage-zero/build
           path: .mz-build
           sparse-checkout: |
             module-compat
