@@ -221,7 +221,7 @@ jobs:
       contents: read
     services:
       mariadb:
-        image: mariadb:10.4
+        image: mariadb:10.5
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: magento
@@ -814,10 +814,6 @@ jobs:
           if [ "${COMPOSER_MUTATED}" -eq 0 ]; then
             composer install --no-dev --prefer-dist
           fi
-          # Create full DB schema so Magento CLI works identically to local dev.
-          # The SCD snapshot only has store/config tables; this adds the rest
-          # (eav_entity_type etc.) so di:compile and module commands bootstrap cleanly.
-          bin/magento setup:db-schema:upgrade
           bin/magento setup:di:compile
           composer dump-autoload --optimize
           SCD_JOBS="${SCD_JOBS:-2}"
