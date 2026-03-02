@@ -500,6 +500,7 @@ jobs:
           $env["resource"] = ["default_setup" => ["connection" => "default"]];
           $env["cache_types"] = isset($env["cache_types"]) && is_array($env["cache_types"]) ? $env["cache_types"] : [];
           $env["cache_types"]["compiled_config"] = 1;
+          $env["install"] = ["date" => date("r")];
           $env["MAGE_MODE"] = "developer";
           if (!is_dir(dirname($path))) { mkdir(dirname($path), 0775, true); }
           file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
@@ -571,7 +572,6 @@ jobs:
           $compatDir = getenv('COMPAT_DIR');
           $config = file_exists('app/etc/config.php') ? include 'app/etc/config.php' : [];
           $enabledModules = array_keys(array_filter($config['modules'] ?? []));
-          $commandList = shell_exec('bin/magento list --raw 2>/dev/null') ?? '';
           $storeCodes = null; // lazy-loaded
           $ran = 0;
 
@@ -602,14 +602,7 @@ jobs:
                   }
 
                   $run = $entry['run'];
-                  $checkCmd = $entry['check_command'] ?? null;
                   $foreachStore = !empty($entry['foreach_store']);
-
-                  // Verify Magento CLI command exists (if check_command specified)
-                  if ($checkCmd !== null && strpos($commandList, $checkCmd) === false) {
-                      echo "  SKIP: $checkCmd (command not registered)\n";
-                      continue;
-                  }
 
                   if ($foreachStore) {
                       // Lazy-load store codes from CI DB
@@ -821,19 +814,12 @@ jobs:
           if [ "${COMPOSER_MUTATED}" -eq 0 ]; then
             composer install --no-dev --prefer-dist
           fi
+          # Create full DB schema so Magento CLI works identically to local dev.
+          # The SCD snapshot only has store/config tables; this adds the rest
+          # (eav_entity_type etc.) so di:compile and module commands bootstrap cleanly.
+          bin/magento setup:db-schema:upgrade
           bin/magento setup:di:compile
           composer dump-autoload --optimize
-
-          # Mark env.php as "installed" so Magento CLI loads module-provided commands
-          # (e.g. weltpixel:less:generate). Must be AFTER di:compile — with install/date
-          # set, di:compile tries to query eav tables that don't exist in the CI DB.
-          php -r '
-            $path = "app/etc/env.php";
-            $env = file_exists($path) ? include $path : [];
-            $env["install"] = ["date" => date("r")];
-            file_put_contents($path, "<?php\nreturn " . var_export($env, true) . ";\n");
-          '
-
           SCD_JOBS="${SCD_JOBS:-2}"
           SCD_LOCALES="${SCD_LOCALES:-}"
           SCD_THEMES="${SCD_THEMES:-}"
