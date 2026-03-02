@@ -270,6 +270,16 @@ jobs:
       - name: Fetch SCD DB snapshot
         id: scd_db_snapshot
         run: |
+          # Collect extra data tables from module compat patches (snapshot_tables field).
+          # These are module-specific tables that need actual data, not just schema.
+          EXTRA_TABLES_JSON="[]"
+          COMPAT_DIR=".mz-build/module-compat"
+          if [ -d "${COMPAT_DIR}" ]; then
+            EXTRA_TABLES_JSON="$(find "${COMPAT_DIR}" -name '*.json' -exec jq -r '.snapshot_tables // [] | .[]' {} + 2>/dev/null | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+            if [ -n "${EXTRA_TABLES_JSON}" ] && [ "${EXTRA_TABLES_JSON}" != "[]" ]; then
+              echo "Module compat snapshot_tables: ${EXTRA_TABLES_JSON}"
+            fi
+          fi
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
@@ -277,7 +287,8 @@ jobs:
             --arg repository "${GITHUB_REPOSITORY}" \
             --arg ref "${GITHUB_REF}" \
             --argjson environment_id "${TARGET_ENVIRONMENT_ID}" \
-            '{repository:$repository, ref:$ref, environment_id:$environment_id, profile:"scd-minimal-v1"}')"
+            --argjson extra_data_tables "${EXTRA_TABLES_JSON}" \
+            '{repository:$repository, ref:$ref, environment_id:$environment_id, profile:"scd-minimal-v1", extra_data_tables:$extra_data_tables}')"
           MAX_ATTEMPTS="${MZ_SCD_SNAPSHOT_MAX_ATTEMPTS:-5}"
           ATTEMPT=1
           while :; do

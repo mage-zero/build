@@ -1,5 +1,8 @@
 {
   "description": "WeltPixel Pearl theme: generate LESS/CSS from database config before static content deploy",
+  "snapshot_tables": [
+    "weltpixel_product_view_values"
+  ],
   "hooks": {
     "pre_scd": [
       {
