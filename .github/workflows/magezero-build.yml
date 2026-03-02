@@ -221,7 +221,7 @@ jobs:
       contents: read
     services:
       mariadb:
-        image: mariadb:10.5
+        image: mariadb:10.4
         env:
           MYSQL_ROOT_PASSWORD: root
           MYSQL_DATABASE: magento
