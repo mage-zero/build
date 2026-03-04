@@ -1318,6 +1318,7 @@ jobs:
           name: magezero-build-${{ github.run_id }}
           path: ${{ env.ARTIFACT_PATH }}
           if-no-files-found: error
+          retention-days: 1
 
   deploy_auto:
     name: Build/Deploy (${{ needs.prepare.outputs.target_0_env }})
@@ -1386,3 +1387,32 @@ jobs:
           DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_2_id }}
+
+  cleanup_artifacts:
+    name: Cleanup GitHub Artifacts
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    needs: [prepare, create_build, deploy_auto, promote_1, promote_2]
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Delete workflow artifacts from this run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run_id = context.runId;
+            const artifacts = await github.paginate(
+              github.rest.actions.listWorkflowRunArtifacts,
+              { owner, repo, run_id, per_page: 100 }
+            );
+            core.info(`Found ${artifacts.length} artifact(s) for run ${run_id}`);
+            for (const artifact of artifacts) {
+              core.info(`Deleting artifact ${artifact.id} (${artifact.name})`);
+              await github.rest.actions.deleteArtifact({
+                owner,
+                repo,
+                artifact_id: artifact.id,
+              });
+            }
