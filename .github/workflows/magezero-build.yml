@@ -271,11 +271,47 @@ jobs:
         id: scd_db_snapshot
         run: |
           # Collect extra data tables from module compat patches (snapshot_tables field).
-          # These are module-specific tables that need actual data, not just schema.
+          # Only include patches for modules enabled in app/etc/config.php; unrelated
+          # compat files must not expand the snapshot request for repositories that
+          # do not use those modules.
           EXTRA_TABLES_JSON="[]"
           COMPAT_DIR=".mz-build/module-compat"
           if [ -d "${COMPAT_DIR}" ]; then
-            EXTRA_TABLES_JSON="$(find "${COMPAT_DIR}" -name '*.json' -exec jq -r '.snapshot_tables // [] | .[]' {} + 2>/dev/null | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+            EXTRA_TABLES_JSON="$(
+              COMPAT_DIR="${COMPAT_DIR}" php <<'PHP'
+          <?php
+          $compatDir = getenv('COMPAT_DIR') ?: '.mz-build/module-compat';
+          $config = file_exists('app/etc/config.php') ? include 'app/etc/config.php' : [];
+          $enabledModules = array_keys(array_filter(is_array($config['modules'] ?? null) ? $config['modules'] : []));
+          $tables = [];
+
+          foreach ($enabledModules as $module) {
+              $patchFile = $compatDir . '/' . $module . '.json';
+              if (!is_file($patchFile)) {
+                  continue;
+              }
+
+              $patch = json_decode(file_get_contents($patchFile), true);
+              if (!is_array($patch)) {
+                  continue;
+              }
+
+              foreach (($patch['snapshot_tables'] ?? []) as $table) {
+                  if (!is_string($table) || $table === '') {
+                      continue;
+                  }
+                  $tables[$table] = true;
+              }
+          }
+
+          $tables = array_keys($tables);
+          sort($tables);
+          echo json_encode($tables, JSON_UNESCAPED_SLASHES);
+          PHP
+            )"
+            if [ -z "${EXTRA_TABLES_JSON}" ] || [ "${EXTRA_TABLES_JSON}" = "null" ]; then
+              EXTRA_TABLES_JSON="[]"
+            fi
             if [ -n "${EXTRA_TABLES_JSON}" ] && [ "${EXTRA_TABLES_JSON}" != "[]" ]; then
               echo "Module compat snapshot_tables: ${EXTRA_TABLES_JSON}"
             fi
