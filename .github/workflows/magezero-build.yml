@@ -111,7 +111,7 @@ jobs:
           MAX_ATTEMPTS="${MZ_CONTEXT_MAX_ATTEMPTS:-5}"
           ATTEMPT=1
           while :; do
-            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/context" \
+            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/context" \
               -H "Authorization: Bearer ${TOKEN}" \
               -H "Content-Type: application/json" \
               -d "${PAYLOAD}" || printf '\n000')"
@@ -328,7 +328,7 @@ jobs:
           MAX_ATTEMPTS="${MZ_SCD_SNAPSHOT_MAX_ATTEMPTS:-5}"
           ATTEMPT=1
           while :; do
-            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/scd-db-snapshot" \
+            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/scd-db-snapshot" \
               -H "Authorization: Bearer ${TOKEN}" \
               -H "Content-Type: application/json" \
               -d "${PAYLOAD}" || printf '\n000')"
@@ -1312,7 +1312,7 @@ jobs:
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/presign" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":1800}")"

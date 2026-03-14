@@ -60,7 +60,7 @@ jobs:
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
 
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/credentials" \
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/context" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}")"
@@ -141,7 +141,7 @@ jobs:
           BASE_URL="${MZ_CONTROL_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v1/build/presign" \
+          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/presign" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"bucket\":\"backups\",\"method\":\"PUT\",\"expires_in\":1800}")"
@@ -182,4 +182,3 @@ jobs:
           DEPLOY_URL: ${{ steps.target.outputs.deploy_url }}
           OBJECT_KEY: ${{ steps.artifact.outputs.object_key }}
           TARGET_ENV_ID: ${{ steps.target.outputs.target_environment_id }}
-
