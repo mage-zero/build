@@ -25,6 +25,31 @@ Optional:
 - `COMPOSER_AUTH` (only if you need private Composer repos)
 - `extra_build_command` (project-specific build tweaks; runs before the default build)
 
+## Optional Stack Runtime Metadata
+
+Customer repos can also include `.magezero/build.yaml` inside the build
+artifact when they need to extend stack-side deployment behavior without
+forking the platform build workflow.
+
+Current supported keys:
+
+```yaml
+magezero:
+  k3s:
+    php:
+      writable_paths:
+        - /var/www/html/magento/var/import
+        - path: /var/www/html/magento/pub/media/custom
+          size_limit: 32Mi
+```
+
+Notes:
+- Paths must be narrow absolute paths, not broad mounts.
+- Broad writable roots like `/var/www/html/magento/var`, `app/etc`, or whole
+  `pub/media` are rejected by the stack deployer.
+- These entries extend the default transient writable allowlist for PHP pods;
+  they do not create persistent shared storage.
+
 ## Example Usage (Customer Repo)
 
 ```yaml
