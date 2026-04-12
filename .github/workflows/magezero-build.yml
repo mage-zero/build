@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      target_environment_id:
+        description: Optional exact MageZero environment ID to build and deploy for.
+        required: false
+        default: ""
+        type: string
       setup_php:
         description: Install PHP tooling on the runner.
         required: false
@@ -108,6 +113,13 @@ jobs:
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
           PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}"
+          if [ -n "${TARGET_ENVIRONMENT_ID}" ]; then
+            if ! printf '%s' "${TARGET_ENVIRONMENT_ID}" | grep -Eq '^[0-9]+$'; then
+              echo "Invalid target environment id: ${TARGET_ENVIRONMENT_ID}"
+              exit 1
+            fi
+            PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENVIRONMENT_ID}}"
+          fi
           MAX_ATTEMPTS="${MZ_CONTEXT_MAX_ATTEMPTS:-5}"
           ATTEMPT=1
           while :; do
@@ -194,6 +206,7 @@ jobs:
           echo "target_2_env=${TARGET_2_ENV}" >> "${GITHUB_OUTPUT}"
         env:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          TARGET_ENVIRONMENT_ID: ${{ inputs.target_environment_id }}
 
       - name: Summary
         run: |
