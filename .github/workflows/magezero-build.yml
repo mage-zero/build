@@ -1408,6 +1408,28 @@ jobs:
           ARTIFACT_PATH="/tmp/${ARTIFACT_NAME}"
           echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> "${GITHUB_ENV}"
           echo "ARTIFACT_PATH=${ARTIFACT_PATH}" >> "${GITHUB_ENV}"
+
+          # Ensure artifact is self-contained for nginx static serving:
+          # materialize any symlinked pub/static assets before archiving.
+          if [ -d pub/static ]; then
+            STATIC_SYMLINKS="$(find pub/static -type l | wc -l | tr -d ' ')"
+            if [ "${STATIC_SYMLINKS}" -gt 0 ]; then
+              echo "Materializing ${STATIC_SYMLINKS} symlinked static assets..."
+              while IFS= read -r -d '' link; do
+                target="$(readlink -f "${link}" || true)"
+                if [ -n "${target}" ] && [ -e "${target}" ]; then
+                  tmp="${link}.resolved"
+                  cp -a "${target}" "${tmp}"
+                  rm -f "${link}"
+                  mv "${tmp}" "${link}"
+                else
+                  echo "ERROR: broken static symlink: ${link} -> $(readlink "${link}" || true)"
+                  exit 1
+                fi
+              done < <(find pub/static -type l -print0)
+            fi
+          fi
+
           tar -I 'zstd -10 -T0' -cf "${ARTIFACT_PATH}" \
             --exclude='.git' \
             --exclude='node_modules' \
