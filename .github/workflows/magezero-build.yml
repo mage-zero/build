@@ -268,30 +268,29 @@ jobs:
         id: effective_php
         run: |
           REQUESTED_PHP="${REQUESTED_PHP_VERSION}"
-          LOCK_MIN_PHP="$(
+          LOCK_ANALYSIS="$(
             php <<'PHP'
           <?php
           $path = 'composer.lock';
           if (!is_file($path)) {
-              echo '';
+              echo json_encode(['min' => '', 'magento_max' => '']);
               exit(0);
           }
           $lock = json_decode((string) file_get_contents($path), true);
           if (!is_array($lock)) {
-              echo '';
+              echo json_encode(['min' => '', 'magento_max' => '']);
               exit(0);
           }
 
-          $packages = array_merge(
-              is_array($lock['packages'] ?? null) ? $lock['packages'] : [],
-              is_array($lock['packages-dev'] ?? null) ? $lock['packages-dev'] : []
-          );
+          $packages = is_array($lock['packages'] ?? null) ? $lock['packages'] : [];
 
-          $best = '';
+          $min = '';
+          $magentoMax = '';
           foreach ($packages as $pkg) {
               if (!is_array($pkg)) {
                   continue;
               }
+              $name = (string) ($pkg['name'] ?? '');
               $require = $pkg['require'] ?? null;
               if (!is_array($require)) {
                   continue;
@@ -301,18 +300,34 @@ jobs:
                   continue;
               }
 
+              if (
+                  $name === 'magento/product-community-edition'
+                  || $name === 'magento/product-enterprise-edition'
+                  || $name === 'magento/product-enterprise-cloud'
+              ) {
+                  if (preg_match_all('/([0-9]+\.[0-9]+)/', $constraint, $mCandidates)) {
+                      foreach ($mCandidates[1] as $candidate) {
+                          if ($magentoMax === '' || version_compare($candidate, $magentoMax, '>')) {
+                              $magentoMax = $candidate;
+                          }
+                      }
+                  }
+              }
+
               if (preg_match_all('/(?:\^|>=|~)\s*([0-9]+\.[0-9]+)/', $constraint, $matches)) {
                   foreach ($matches[1] as $candidate) {
-                      if ($best === '' || version_compare($candidate, $best, '>')) {
-                          $best = $candidate;
+                      if ($min === '' || version_compare($candidate, $min, '>')) {
+                          $min = $candidate;
                       }
                   }
               }
           }
 
-          echo $best;
+          echo json_encode(['min' => $min, 'magento_max' => $magentoMax]);
           PHP
           )"
+          LOCK_MIN_PHP="$(printf '%s' "${LOCK_ANALYSIS}" | jq -r '.min // ""')"
+          MAGENTO_MAX_PHP="$(printf '%s' "${LOCK_ANALYSIS}" | jq -r '.magento_max // ""')"
 
           EFFECTIVE_PHP="${REQUESTED_PHP}"
           if [ -n "${LOCK_MIN_PHP}" ] && [ -n "${REQUESTED_PHP}" ]; then
@@ -320,6 +335,13 @@ jobs:
               && [ "${LOCK_MIN_PHP}" != "${REQUESTED_PHP}" ]; then
               echo "composer.lock requires >=${LOCK_MIN_PHP}; overriding requested ${REQUESTED_PHP}."
               EFFECTIVE_PHP="${LOCK_MIN_PHP}"
+            fi
+          fi
+          if [ -n "${MAGENTO_MAX_PHP}" ] && [ -n "${EFFECTIVE_PHP}" ]; then
+            if [ "$(printf '%s\n' "${MAGENTO_MAX_PHP}" "${EFFECTIVE_PHP}" | sort -V | tail -n1)" = "${EFFECTIVE_PHP}" ] \
+              && [ "${EFFECTIVE_PHP}" != "${MAGENTO_MAX_PHP}" ]; then
+              echo "Magento package caps PHP at ${MAGENTO_MAX_PHP}; clamping ${EFFECTIVE_PHP}."
+              EFFECTIVE_PHP="${MAGENTO_MAX_PHP}"
             fi
           fi
 
