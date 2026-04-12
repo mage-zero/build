@@ -264,6 +264,70 @@ jobs:
         run: |
           echo "Requested PHP version: ${{ needs.prepare.outputs.php_version }}"
 
+      - name: Resolve effective PHP version from composer.lock
+        id: effective_php
+        run: |
+          REQUESTED_PHP="${REQUESTED_PHP_VERSION}"
+          LOCK_MIN_PHP="$(
+            php <<'PHP'
+          <?php
+          $path = 'composer.lock';
+          if (!is_file($path)) {
+              echo '';
+              exit(0);
+          }
+          $lock = json_decode((string) file_get_contents($path), true);
+          if (!is_array($lock)) {
+              echo '';
+              exit(0);
+          }
+
+          $packages = array_merge(
+              is_array($lock['packages'] ?? null) ? $lock['packages'] : [],
+              is_array($lock['packages-dev'] ?? null) ? $lock['packages-dev'] : []
+          );
+
+          $best = '';
+          foreach ($packages as $pkg) {
+              if (!is_array($pkg)) {
+                  continue;
+              }
+              $require = $pkg['require'] ?? null;
+              if (!is_array($require)) {
+                  continue;
+              }
+              $constraint = trim((string) ($require['php'] ?? ''));
+              if ($constraint === '') {
+                  continue;
+              }
+
+              if (preg_match_all('/(?:\^|>=|~)\s*([0-9]+\.[0-9]+)/', $constraint, $matches)) {
+                  foreach ($matches[1] as $candidate) {
+                      if ($best === '' || version_compare($candidate, $best, '>')) {
+                          $best = $candidate;
+                      }
+                  }
+              }
+          }
+
+          echo $best;
+          PHP
+          )"
+
+          EFFECTIVE_PHP="${REQUESTED_PHP}"
+          if [ -n "${LOCK_MIN_PHP}" ] && [ -n "${REQUESTED_PHP}" ]; then
+            if [ "$(printf '%s\n' "${LOCK_MIN_PHP}" "${REQUESTED_PHP}" | sort -V | tail -n1)" = "${LOCK_MIN_PHP}" ] \
+              && [ "${LOCK_MIN_PHP}" != "${REQUESTED_PHP}" ]; then
+              echo "composer.lock requires >=${LOCK_MIN_PHP}; overriding requested ${REQUESTED_PHP}."
+              EFFECTIVE_PHP="${LOCK_MIN_PHP}"
+            fi
+          fi
+
+          echo "php_version=${EFFECTIVE_PHP}" >> "${GITHUB_OUTPUT}"
+          echo "Effective PHP version: ${EFFECTIVE_PHP}"
+        env:
+          REQUESTED_PHP_VERSION: ${{ needs.prepare.outputs.php_version }}
+
       - name: Log Composer selection
         run: |
           echo "Requested Composer version: ${{ needs.prepare.outputs.composer_version }}"
@@ -272,7 +336,7 @@ jobs:
         if: ${{ inputs.setup_php }}
         uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ needs.prepare.outputs.php_version }}
+          php-version: ${{ steps.effective_php.outputs.php_version }}
           extensions: rrd
           tools: composer:${{ needs.prepare.outputs.composer_version }}
 
