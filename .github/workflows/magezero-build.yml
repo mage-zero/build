@@ -775,7 +775,9 @@ jobs:
           composer config repositories.magezero-opensearch-observability vcs https://github.com/mage-zero/magento2-opensearch-observability.git
           if [ -n "${LOCKED_OBSERVABILITY_MODULE_VERSION}" ]; then
             echo "mage-zero/magento2-opensearch-observability already installed (${LOCKED_OBSERVABILITY_MODULE_VERSION}); updating to latest."
-            composer update mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts
+            if ! composer update mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts; then
+              echo "Warning: observability module update failed; continuing with locked version."
+            fi
           else
             echo "mage-zero/magento2-opensearch-observability not present in composer.lock; installing latest stable."
             composer require mage-zero/magento2-opensearch-observability --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
@@ -799,7 +801,9 @@ jobs:
           composer config repositories.magezero-cloudflare-r2-storage vcs https://github.com/mage-zero/magento2-cloudflare-r2-storage.git
           if [ -n "${LOCKED_R2_MODULE_VERSION}" ]; then
             echo "magezero/magento2-cloudflare-r2-storage already installed (${LOCKED_R2_MODULE_VERSION}); updating to latest."
-            composer update magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts
+            if ! composer update magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts; then
+              echo "Warning: R2 storage module update failed; continuing with locked version."
+            fi
           else
             echo "magezero/magento2-cloudflare-r2-storage not present in composer.lock; installing latest stable."
             composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
@@ -823,7 +827,9 @@ jobs:
           composer config repositories.magezero-cluster-maintenance vcs https://github.com/mage-zero/magento2-cluster-friendly-maintenance-mode.git
           if [ -n "${LOCKED_MAINTENANCE_MODULE_VERSION}" ]; then
             echo "magezero/magento2-cluster-friendly-maintenance-mode already installed (${LOCKED_MAINTENANCE_MODULE_VERSION}); updating to latest."
-            composer update magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts
+            if ! composer update magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --no-dev --prefer-dist --no-scripts; then
+              echo "Warning: cluster maintenance module update failed; continuing with locked version."
+            fi
           else
             echo "magezero/magento2-cluster-friendly-maintenance-mode not present in composer.lock; installing latest stable."
             composer require magezero/magento2-cluster-friendly-maintenance-mode --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
