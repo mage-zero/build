@@ -1416,14 +1416,29 @@ jobs:
             if [ "${STATIC_SYMLINKS}" -gt 0 ]; then
               echo "Materializing ${STATIC_SYMLINKS} symlinked static assets..."
               while IFS= read -r -d '' link; do
-                target="$(readlink -f "${link}" || true)"
-                if [ -n "${target}" ] && [ -e "${target}" ]; then
+                raw_target="$(readlink "${link}" || true)"
+                if [ -z "${raw_target}" ]; then
+                  echo "ERROR: unable to read static symlink target for ${link}"
+                  exit 1
+                fi
+                case "${raw_target}" in
+                  /var/www/html/magento/*)
+                    target="${GITHUB_WORKSPACE}${raw_target#/var/www/html/magento}"
+                    ;;
+                  /*)
+                    target="${raw_target}"
+                    ;;
+                  *)
+                    target="$(dirname "${link}")/${raw_target}"
+                    ;;
+                esac
+                if [ -e "${target}" ]; then
                   tmp="${link}.resolved"
                   cp -a "${target}" "${tmp}"
                   rm -f "${link}"
                   mv "${tmp}" "${link}"
                 else
-                  echo "ERROR: broken static symlink: ${link} -> $(readlink "${link}" || true)"
+                  echo "ERROR: broken static symlink: ${link} -> ${raw_target} (resolved: ${target})"
                   exit 1
                 fi
               done < <(find pub/static -type l -print0)
