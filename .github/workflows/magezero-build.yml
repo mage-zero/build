@@ -27,6 +27,26 @@ on:
         description: Base URL for mz-control.
         required: true
         type: string
+      context_override_json:
+        description: Optional direct context payload override (skips mz-control /v2/build/context).
+        required: false
+        default: ""
+        type: string
+      upload_url_override:
+        description: Optional direct artifact upload URL override (skips mz-control /v2/build/presign).
+        required: false
+        default: ""
+        type: string
+      scd_db_snapshot_override_url:
+        description: Optional direct URL to a prebuilt SCD DB snapshot (.sql.gz) that bypasses mz-control /v2/build/scd-db-snapshot.
+        required: false
+        default: ""
+        type: string
+      scd_db_snapshot_override_sha256:
+        description: Optional SHA-256 checksum for scd_db_snapshot_override_url payload validation.
+        required: false
+        default: ""
+        type: string
       build_command:
         description: Optional build command that replaces the default MageZero build.
         required: false
@@ -67,6 +87,8 @@ on:
         type: string
     secrets:
       COMPOSER_AUTH:
+        required: false
+      DEPLOY_BEARER_TOKEN:
         required: false
 
 jobs:
@@ -109,44 +131,53 @@ jobs:
       - name: Request build targets
         id: creds
         run: |
-          BASE_URL="${MZ_CONTROL_URL%/}"
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}"
-          if [ -n "${TARGET_ENVIRONMENT_ID}" ]; then
-            if ! printf '%s' "${TARGET_ENVIRONMENT_ID}" | grep -Eq '^[0-9]+$'; then
-              echo "Invalid target environment id: ${TARGET_ENVIRONMENT_ID}"
+          if [ -n "${CONTEXT_OVERRIDE_JSON}" ]; then
+            echo "Using context_override_json input; skipping mz-control /v2/build/context call"
+            RESPONSE_BODY="${CONTEXT_OVERRIDE_JSON}"
+          else
+            if [ -z "${MZ_CONTROL_URL}" ]; then
+              echo "mz_control_url is required when context_override_json is not supplied"
               exit 1
             fi
-            PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENVIRONMENT_ID}}"
-          fi
-          MAX_ATTEMPTS="${MZ_CONTEXT_MAX_ATTEMPTS:-5}"
-          ATTEMPT=1
-          while :; do
-            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/context" \
-              -H "Authorization: Bearer ${TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "${PAYLOAD}" || printf '\n000')"
-            RESPONSE_BODY="${RESPONSE%$'\n'*}"
-            RESPONSE_CODE="${RESPONSE##*$'\n'}"
-
-            if [ "${RESPONSE_CODE}" -lt 300 ]; then
-              break
-            fi
-
-            if [ "${RESPONSE_CODE}" = "000" ] || [ "${RESPONSE_CODE}" = "429" ] || [ "${RESPONSE_CODE}" -ge 500 ]; then
-              if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
-                SLEEP_SECONDS=$((ATTEMPT * 2))
-                echo "mz-control transient error (${RESPONSE_CODE}) attempt ${ATTEMPT}/${MAX_ATTEMPTS}; retrying in ${SLEEP_SECONDS}s"
-                sleep "${SLEEP_SECONDS}"
-                ATTEMPT=$((ATTEMPT + 1))
-                continue
+            BASE_URL="${MZ_CONTROL_URL%/}"
+            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+            PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\"}"
+            if [ -n "${TARGET_ENVIRONMENT_ID}" ]; then
+              if ! printf '%s' "${TARGET_ENVIRONMENT_ID}" | grep -Eq '^[0-9]+$'; then
+                echo "Invalid target environment id: ${TARGET_ENVIRONMENT_ID}"
+                exit 1
               fi
+              PAYLOAD="{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENVIRONMENT_ID}}"
             fi
+            MAX_ATTEMPTS="${MZ_CONTEXT_MAX_ATTEMPTS:-5}"
+            ATTEMPT=1
+            while :; do
+              RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/context" \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "${PAYLOAD}" || printf '\n000')"
+              RESPONSE_BODY="${RESPONSE%$'\n'*}"
+              RESPONSE_CODE="${RESPONSE##*$'\n'}"
 
-            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
-            exit 1
-          done
+              if [ "${RESPONSE_CODE}" -lt 300 ]; then
+                break
+              fi
+
+              if [ "${RESPONSE_CODE}" = "000" ] || [ "${RESPONSE_CODE}" = "429" ] || [ "${RESPONSE_CODE}" -ge 500 ]; then
+                if [ "${ATTEMPT}" -lt "${MAX_ATTEMPTS}" ]; then
+                  SLEEP_SECONDS=$((ATTEMPT * 2))
+                  echo "mz-control transient error (${RESPONSE_CODE}) attempt ${ATTEMPT}/${MAX_ATTEMPTS}; retrying in ${SLEEP_SECONDS}s"
+                  sleep "${SLEEP_SECONDS}"
+                  ATTEMPT=$((ATTEMPT + 1))
+                  continue
+                fi
+              fi
+
+              echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+              exit 1
+            done
+          fi
 
           DEPLOY_URL="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.deploy_url // ""')"
           if [ -z "${DEPLOY_URL}" ] || [ "${DEPLOY_URL}" = "null" ]; then
@@ -207,6 +238,7 @@ jobs:
         env:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
           TARGET_ENVIRONMENT_ID: ${{ inputs.target_environment_id }}
+          CONTEXT_OVERRIDE_JSON: ${{ inputs.context_override_json }}
 
       - name: Summary
         run: |
@@ -369,6 +401,29 @@ jobs:
       - name: Fetch SCD DB snapshot
         id: scd_db_snapshot
         run: |
+          SNAPSHOT_GZ="/tmp/mz-scd-db-snapshot.sql.gz"
+          if [ -n "${SCD_DB_SNAPSHOT_OVERRIDE_URL}" ]; then
+            echo "Using scd_db_snapshot_override_url input; skipping mz-control /v2/build/scd-db-snapshot call"
+            curl -fsS -L "${SCD_DB_SNAPSHOT_OVERRIDE_URL}" -o "${SNAPSHOT_GZ}"
+            if [ ! -s "${SNAPSHOT_GZ}" ]; then
+              echo "Snapshot override download produced an empty payload."
+              exit 1
+            fi
+            if [ -n "${SCD_DB_SNAPSHOT_OVERRIDE_SHA256}" ]; then
+              ACTUAL_SHA="$(sha256sum "${SNAPSHOT_GZ}" | awk '{print $1}')"
+              if [ "${SCD_DB_SNAPSHOT_OVERRIDE_SHA256}" != "${ACTUAL_SHA}" ]; then
+                echo "Snapshot override checksum mismatch."
+                exit 1
+              fi
+            fi
+            echo "SCD_DB_SNAPSHOT_PATH=${SNAPSHOT_GZ}" >> "${GITHUB_ENV}"
+            echo "### SCD DB Snapshot" >> "${GITHUB_STEP_SUMMARY}"
+            echo "" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Source: scd_db_snapshot_override_url" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- sql.gz size: $(du -h "${SNAPSHOT_GZ}" | awk '{print $1}')" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
           # Collect extra data tables from module compat patches (snapshot_tables field).
           # Only include patches for modules enabled in app/etc/config.php; unrelated
           # compat files must not expand the snapshot request for repositories that
@@ -453,7 +508,6 @@ jobs:
           done
 
           SNAPSHOT_JSON="/tmp/mz-scd-db-snapshot.json"
-          SNAPSHOT_GZ="/tmp/mz-scd-db-snapshot.sql.gz"
           printf '%s' "${RESPONSE_BODY}" > "${SNAPSHOT_JSON}"
           jq -er '.sql_gz_base64' "${SNAPSHOT_JSON}" | base64 -d > "${SNAPSHOT_GZ}"
 
@@ -485,6 +539,8 @@ jobs:
         env:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
           TARGET_ENVIRONMENT_ID: ${{ needs.prepare.outputs.target_0_id }}
+          SCD_DB_SNAPSHOT_OVERRIDE_URL: ${{ inputs.scd_db_snapshot_override_url }}
+          SCD_DB_SNAPSHOT_OVERRIDE_SHA256: ${{ inputs.scd_db_snapshot_override_sha256 }}
 
       - name: Import SCD DB snapshot into CI MariaDB
         run: |
@@ -1457,20 +1513,25 @@ jobs:
       - name: Request upload URL (primary target)
         id: presign_primary
         run: |
-          BASE_URL="${MZ_CONTROL_URL%/}"
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/presign" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"method\":\"PUT\",\"expires_in\":1800}")"
-          RESPONSE_BODY="${RESPONSE%$'\n'*}"
-          RESPONSE_CODE="${RESPONSE##*$'\n'}"
-          if [ "${RESPONSE_CODE}" -ge 300 ]; then
-            echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
-            exit 1
+          if [ -n "${UPLOAD_URL_OVERRIDE}" ]; then
+            echo "Using upload_url_override input; skipping mz-control /v2/build/presign call"
+            UPLOAD_URL="${UPLOAD_URL_OVERRIDE}"
+          else
+            BASE_URL="${MZ_CONTROL_URL%/}"
+            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+            RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/presign" \
+              -H "Authorization: Bearer ${TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID},\"object_key\":\"${OBJECT_KEY}\",\"method\":\"PUT\",\"expires_in\":1800}")"
+            RESPONSE_BODY="${RESPONSE%$'\n'*}"
+            RESPONSE_CODE="${RESPONSE##*$'\n'}"
+            if [ "${RESPONSE_CODE}" -ge 300 ]; then
+              echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
+              exit 1
+            fi
+            UPLOAD_URL="$(echo "${RESPONSE_BODY}" | jq -r '.url')"
           fi
-          UPLOAD_URL="$(echo "${RESPONSE_BODY}" | jq -r '.url')"
           if [ -z "${UPLOAD_URL}" ] || [ "${UPLOAD_URL}" = "null" ]; then
             echo "mz-control error: missing upload URL"
             exit 1
@@ -1481,6 +1542,7 @@ jobs:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_0_id }}
+          UPLOAD_URL_OVERRIDE: ${{ inputs.upload_url_override }}
 
       - name: Upload artifact to R2
         run: |
@@ -1515,8 +1577,12 @@ jobs:
       - name: Trigger deployment
         if: ${{ needs.prepare.outputs.deploy_url != '' }}
         run: |
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          if [ -n "${DEPLOY_BEARER_TOKEN}" ]; then
+            TOKEN="${DEPLOY_BEARER_TOKEN}"
+          else
+            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          fi
           curl -fsS -X POST "${DEPLOY_URL}" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
@@ -1525,6 +1591,7 @@ jobs:
           DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_0_id }}
+          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
 
   promote_1:
     name: Build/Deploy (${{ needs.prepare.outputs.target_1_env }})
@@ -1538,8 +1605,12 @@ jobs:
     steps:
       - name: Trigger deployment
         run: |
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          if [ -n "${DEPLOY_BEARER_TOKEN}" ]; then
+            TOKEN="${DEPLOY_BEARER_TOKEN}"
+          else
+            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          fi
           curl -fsS -X POST "${DEPLOY_URL}" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
@@ -1548,6 +1619,7 @@ jobs:
           DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_1_id }}
+          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
 
   promote_2:
     name: Build/Deploy (${{ needs.prepare.outputs.target_2_env }})
@@ -1561,8 +1633,12 @@ jobs:
     steps:
       - name: Trigger deployment
         run: |
-          TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          if [ -n "${DEPLOY_BEARER_TOKEN}" ]; then
+            TOKEN="${DEPLOY_BEARER_TOKEN}"
+          else
+            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
+          fi
           curl -fsS -X POST "${DEPLOY_URL}" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
@@ -1571,3 +1647,4 @@ jobs:
           DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_2_id }}
+          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
