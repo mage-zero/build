@@ -25,6 +25,34 @@ Optional:
 - `COMPOSER_AUTH` (only if you need private Composer repos)
 - `extra_build_command` (project-specific build tweaks; runs before the default build)
 
+## Transition Overrides (Optional)
+
+For stack-side transition/hardening scenarios, `magezero-build.yml` supports
+optional override inputs so callers can bypass selected `mz-control` calls when
+they already have trusted runtime metadata.
+
+Available optional overrides:
+
+- `context_override_json`: bypasses `POST /v2/build/context`.
+- `upload_url_override`: bypasses `POST /v2/build/presign`.
+- `scd_db_snapshot_override_url`: bypasses `POST /v2/build/scd-db-snapshot`.
+- `scd_db_snapshot_override_sha256`: optional integrity check for
+  `scd_db_snapshot_override_url`.
+- secret `DEPLOY_BEARER_TOKEN`: optional deploy authorization override for
+  deploy/promote trigger steps (instead of per-job OIDC minting).
+
+Recommended minimum `context_override_json` fields:
+
+- `deploy_url` (string)
+- `environment_id` or `promotion_targets[0].environment_id`
+- optional: `php_version`, `composer_version`, `promotion_targets`
+
+Security notes:
+
+- keep override URLs short-lived and tightly scoped.
+- prefer supplying `scd_db_snapshot_override_sha256` whenever snapshot override
+  URLs are used.
+
 ## Optional Stack Runtime Metadata
 
 Customer repos can also include `.magezero/build.yaml` inside the build
