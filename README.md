@@ -19,7 +19,11 @@ authenticate to `mz-control`, which returns short-lived upload credentials and
 the deploy trigger endpoint.
 
 Inputs required:
-- `mz_control_url` (e.g. `https://mz-control.magezero.com`)
+- `mz_control_url` (the environment-owning stack build API URL, for example
+  `https://mz-control.<owning-stack-hostname>`)
+
+`mz_control_url` must belong to the environment-owning stack. Central is only a
+valid value when the central stack itself owns the target environment.
 
 Optional:
 - `COMPOSER_AUTH` (only if you need private Composer repos)
@@ -43,6 +47,7 @@ Available optional overrides:
 
 Recommended minimum `context_override_json` fields:
 
+- `build_api_url` (string)
 - `deploy_url` (string)
 - `environment_id` or `promotion_targets[0].environment_id`
 - optional: `php_version`, `composer_version`, `promotion_targets`
@@ -92,7 +97,7 @@ jobs:
     uses: mage-zero/build/.github/workflows/magezero-build.yml@main
     with:
       image_tag: ${{ github.sha }}
-      mz_control_url: https://mz-control.magezero.com
+      mz_control_url: https://mz-control.<owning-stack-hostname>
       extra_build_command: |
         # Optional project-specific build tweaks.
         # Runs before the default MageZero build steps.
@@ -107,4 +112,5 @@ Legacy:
 
 - Artifacts are uploaded to `s3://<backup-bucket>/builds/<repo>/<sha>.tar.zst`.
 - `mz-control` returns short-lived credentials scoped to `builds/`.
-- `mz-control` also returns the PHP version for the environment.
+- `mz-control` also returns the PHP version plus the owning stack
+  `build_api_url` and `deploy_url`.

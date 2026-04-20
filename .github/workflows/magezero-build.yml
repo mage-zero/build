@@ -24,7 +24,7 @@ on:
         default: true
         type: boolean
       mz_control_url:
-        description: Base URL for mz-control.
+        description: Base URL for the environment-owning stack build API (`mz-control-temporal` or stack-owned ingress in front of it).
         required: true
         type: string
       context_override_json:
@@ -99,6 +99,7 @@ jobs:
       id-token: write
       contents: read
     outputs:
+      build_api_url: ${{ steps.creds.outputs.build_api_url }}
       deploy_url: ${{ steps.creds.outputs.deploy_url }}
       php_version: ${{ steps.creds.outputs.php_version }}
       composer_version: ${{ steps.creds.outputs.composer_version }}
@@ -186,6 +187,13 @@ jobs:
           fi
           echo "deploy_url=${DEPLOY_URL}" >> "${GITHUB_OUTPUT}"
 
+          BUILD_API_URL="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.build_api_url // ""')"
+          if [ -z "${BUILD_API_URL}" ] || [ "${BUILD_API_URL}" = "null" ]; then
+            echo "mz-control error: missing build_api_url"
+            exit 1
+          fi
+          echo "build_api_url=${BUILD_API_URL}" >> "${GITHUB_OUTPUT}"
+
           PHP_VERSION="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.php_version // "8.2"')"
           echo "php_version=${PHP_VERSION}" >> "${GITHUB_OUTPUT}"
 
@@ -254,6 +262,8 @@ jobs:
           echo "" >> "${GITHUB_STEP_SUMMARY}"
           echo "Same-run promotions are disabled by default (input: \`enable_promotions\`)." >> "${GITHUB_STEP_SUMMARY}"
           echo "If you enable promotions, you should gate them using environment approvals (GitHub Enterprise for private repos)." >> "${GITHUB_STEP_SUMMARY}"
+          echo "" >> "${GITHUB_STEP_SUMMARY}"
+          echo "Build API URL: ${{ steps.creds.outputs.build_api_url }}" >> "${GITHUB_STEP_SUMMARY}"
         env:
           PROMOTION_TARGETS_JSON: ${{ steps.creds.outputs.promotion_targets_json }}
 
@@ -470,7 +480,11 @@ jobs:
               echo "Module compat snapshot_tables: ${EXTRA_TABLES_JSON}"
             fi
           fi
-          BASE_URL="${MZ_CONTROL_URL%/}"
+          if [ -z "${MZ_BUILD_API_URL}" ]; then
+            echo "build_api_url is required when scd_db_snapshot_override_url is not supplied"
+            exit 1
+          fi
+          BASE_URL="${MZ_BUILD_API_URL%/}"
           TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
             -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
           PAYLOAD="$(jq -cn \
@@ -537,7 +551,7 @@ jobs:
           fi
           unset RESPONSE RESPONSE_BODY TOKEN PAYLOAD
         env:
-          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          MZ_BUILD_API_URL: ${{ needs.prepare.outputs.build_api_url }}
           TARGET_ENVIRONMENT_ID: ${{ needs.prepare.outputs.target_0_id }}
           SCD_DB_SNAPSHOT_OVERRIDE_URL: ${{ inputs.scd_db_snapshot_override_url }}
           SCD_DB_SNAPSHOT_OVERRIDE_SHA256: ${{ inputs.scd_db_snapshot_override_sha256 }}
@@ -1517,7 +1531,11 @@ jobs:
             echo "Using upload_url_override input; skipping mz-control /v2/build/presign call"
             UPLOAD_URL="${UPLOAD_URL_OVERRIDE}"
           else
-            BASE_URL="${MZ_CONTROL_URL%/}"
+            if [ -z "${MZ_BUILD_API_URL}" ]; then
+              echo "build_api_url is required when upload_url_override is not supplied"
+              exit 1
+            fi
+            BASE_URL="${MZ_BUILD_API_URL%/}"
             TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
               -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
             RESPONSE="$(curl -sS -w "\n%{http_code}" -X POST "${BASE_URL}/v2/build/presign" \
@@ -1539,7 +1557,7 @@ jobs:
           echo "::add-mask::${UPLOAD_URL}"
           echo "upload_url=${UPLOAD_URL}" >> "${GITHUB_OUTPUT}"
         env:
-          MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
+          MZ_BUILD_API_URL: ${{ needs.prepare.outputs.build_api_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_0_id }}
           UPLOAD_URL_OVERRIDE: ${{ inputs.upload_url_override }}
