@@ -412,6 +412,21 @@ jobs:
         id: scd_db_snapshot
         run: |
           SNAPSHOT_GZ="/tmp/mz-scd-db-snapshot.sql.gz"
+          copy_local_snapshot_fallback() {
+            for candidate in ".magezero/scd-db-snapshot.sql.gz" "var/scd-minimal-db.sql.gz" "db.sql.gz"; do
+              if [ -s "${candidate}" ]; then
+                cp "${candidate}" "${SNAPSHOT_GZ}"
+                echo "SCD_DB_SNAPSHOT_PATH=${SNAPSHOT_GZ}" >> "${GITHUB_ENV}"
+                echo "### SCD DB Snapshot" >> "${GITHUB_STEP_SUMMARY}"
+                echo "" >> "${GITHUB_STEP_SUMMARY}"
+                echo "- Source: repository fallback (${candidate})" >> "${GITHUB_STEP_SUMMARY}"
+                echo "- sql.gz size: $(du -h "${SNAPSHOT_GZ}" | awk '{print $1}')" >> "${GITHUB_STEP_SUMMARY}"
+                echo "Using repository fallback snapshot from ${candidate}"
+                return 0
+              fi
+            done
+            return 1
+          }
           if [ -n "${SCD_DB_SNAPSHOT_OVERRIDE_URL}" ]; then
             echo "Using scd_db_snapshot_override_url input; skipping mz-control /v2/build/scd-db-snapshot call"
             curl -fsS -L "${SCD_DB_SNAPSHOT_OVERRIDE_URL}" -o "${SNAPSHOT_GZ}"
@@ -515,6 +530,10 @@ jobs:
                 ATTEMPT=$((ATTEMPT + 1))
                 continue
               fi
+            fi
+
+            if copy_local_snapshot_fallback; then
+              exit 0
             fi
 
             echo "mz-control error (${RESPONSE_CODE}): ${RESPONSE_BODY}"
