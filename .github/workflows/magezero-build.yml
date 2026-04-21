@@ -370,12 +370,60 @@ jobs:
           )"
           LOCK_MIN_PHP="$(printf '%s' "${LOCK_ANALYSIS}" | jq -r '.min // ""')"
           MAGENTO_MAX_PHP="$(printf '%s' "${LOCK_ANALYSIS}" | jq -r '.magento_max // ""')"
+          LOCK_PLATFORM_PHP="$(php <<'PHP'
+          <?php
+          $lockPath = 'composer.lock';
+          if (!is_file($lockPath)) {
+              exit(0);
+          }
+          $lock = json_decode((string) file_get_contents($lockPath), true);
+          if (!is_array($lock)) {
+              exit(0);
+          }
+          $platform = trim((string) (($lock['platform']['php'] ?? '') ?: ''));
+          if ($platform === '') {
+              exit(0);
+          }
+          if (preg_match('/([0-9]+\.[0-9]+)/', $platform, $matches)) {
+              echo $matches[1];
+          }
+          PHP
+          )"
+          ROOT_REQUIRE_PHP="$(php <<'PHP'
+          <?php
+          $composerPath = 'composer.json';
+          if (!is_file($composerPath)) {
+              exit(0);
+          }
+          $composer = json_decode((string) file_get_contents($composerPath), true);
+          if (!is_array($composer)) {
+              exit(0);
+          }
+          $constraint = trim((string) (($composer['require']['php'] ?? '') ?: ''));
+          if ($constraint === '') {
+              exit(0);
+          }
+          if (preg_match('/([0-9]+\.[0-9]+)/', $constraint, $matches)) {
+              echo $matches[1];
+          }
+          PHP
+          )"
 
           EFFECTIVE_PHP="${REQUESTED_PHP}"
-          if [ -n "${LOCK_MIN_PHP}" ] && [ -n "${REQUESTED_PHP}" ]; then
-            if [ "$(printf '%s\n' "${LOCK_MIN_PHP}" "${REQUESTED_PHP}" | sort -V | tail -n1)" = "${LOCK_MIN_PHP}" ] \
-              && [ "${LOCK_MIN_PHP}" != "${REQUESTED_PHP}" ]; then
-              echo "composer.lock requires >=${LOCK_MIN_PHP}; overriding requested ${REQUESTED_PHP}."
+          if [ -n "${LOCK_PLATFORM_PHP}" ]; then
+            echo "composer.lock platform pins PHP to ${LOCK_PLATFORM_PHP}; overriding requested ${REQUESTED_PHP}."
+            EFFECTIVE_PHP="${LOCK_PLATFORM_PHP}"
+          elif [ -n "${ROOT_REQUIRE_PHP}" ] && [ -n "${REQUESTED_PHP}" ]; then
+            if [ "$(printf '%s\n' "${ROOT_REQUIRE_PHP}" "${REQUESTED_PHP}" | sort -V | tail -n1)" = "${REQUESTED_PHP}" ] \
+              && [ "${ROOT_REQUIRE_PHP}" != "${REQUESTED_PHP}" ]; then
+              echo "composer.json requires PHP ${ROOT_REQUIRE_PHP}; clamping requested ${REQUESTED_PHP}."
+              EFFECTIVE_PHP="${ROOT_REQUIRE_PHP}"
+            fi
+          fi
+          if [ -z "${LOCK_PLATFORM_PHP}" ] && [ -n "${LOCK_MIN_PHP}" ] && [ -n "${EFFECTIVE_PHP}" ]; then
+            if [ "$(printf '%s\n' "${LOCK_MIN_PHP}" "${EFFECTIVE_PHP}" | sort -V | tail -n1)" = "${LOCK_MIN_PHP}" ] \
+              && [ "${LOCK_MIN_PHP}" != "${EFFECTIVE_PHP}" ]; then
+              echo "composer.lock requires >=${LOCK_MIN_PHP}; overriding ${EFFECTIVE_PHP}."
               EFFECTIVE_PHP="${LOCK_MIN_PHP}"
             fi
           fi
