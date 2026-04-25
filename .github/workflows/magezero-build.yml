@@ -1033,7 +1033,9 @@ jobs:
             fi
           else
             echo "magezero/magento2-cloudflare-r2-storage not present in composer.lock; installing latest stable."
-            composer require magezero/magento2-cloudflare-r2-storage --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
+            # Keep this module on the private 0.x line to avoid dependency-confusion blocks
+            # when a higher public major appears on Packagist.
+            composer require magezero/magento2-cloudflare-r2-storage:'<1.0.0' --with-all-dependencies --minimal-changes --update-no-dev --prefer-dist --no-scripts
             COMPOSER_MUTATED=1
           fi
           # Platform cluster-friendly maintenance mode module (injected by MageZero)
