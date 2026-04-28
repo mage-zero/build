@@ -8,11 +8,6 @@ on:
         required: false
         default: ${{ github.sha }}
         type: string
-      enable_promotions:
-        description: "Enable same-run promotion jobs (staging/production). NOTE: without environment approvals this will auto-run."
-        required: false
-        default: false
-        type: boolean
       target_environment_id:
         description: Optional exact MageZero environment ID to build and deploy for.
         required: false
@@ -105,16 +100,9 @@ jobs:
       composer_version: ${{ steps.creds.outputs.composer_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
       object_key: ${{ steps.meta.outputs.object_key }}
-      promotion_targets_json: ${{ steps.creds.outputs.promotion_targets_json }}
       target_0_id: ${{ steps.creds.outputs.target_0_id }}
       target_0_type: ${{ steps.creds.outputs.target_0_type }}
       target_0_env: ${{ steps.creds.outputs.target_0_env }}
-      target_1_id: ${{ steps.creds.outputs.target_1_id }}
-      target_1_type: ${{ steps.creds.outputs.target_1_type }}
-      target_1_env: ${{ steps.creds.outputs.target_1_env }}
-      target_2_id: ${{ steps.creds.outputs.target_2_id }}
-      target_2_type: ${{ steps.creds.outputs.target_2_type }}
-      target_2_env: ${{ steps.creds.outputs.target_2_env }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -200,25 +188,11 @@ jobs:
           COMPOSER_VERSION="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.composer_version // "v2"')"
           echo "composer_version=${COMPOSER_VERSION}" >> "${GITHUB_OUTPUT}"
 
-          PROMOTION_TARGETS="$(printf '%s' "${RESPONSE_BODY}" | jq -c '.promotion_targets // []')"
-          echo "promotion_targets_json=${PROMOTION_TARGETS}" >> "${GITHUB_OUTPUT}"
-          echo "Promotion targets: ${PROMOTION_TARGETS}"
-
-          # Targets are ordered from lowest -> highest environment type.
-          # Safety invariant: production MUST NEVER auto-deploy.
-          TARGET_0_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '[.[] | select((.environment_type // "" | ascii_downcase) != "production")][0].environment_id // empty')"
-          TARGET_0_TYPE="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '[.[] | select((.environment_type // "" | ascii_downcase) != "production")][0].environment_type // empty')"
-          TARGET_1_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[1].environment_id // empty')"
-          TARGET_1_TYPE="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[1].environment_type // empty')"
-          TARGET_2_ID="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[2].environment_id // empty')"
-          TARGET_2_TYPE="$(printf '%s' "${PROMOTION_TARGETS}" | jq -r '.[2].environment_type // empty')"
+          TARGET_0_ID="$(printf '%s' "${RESPONSE_BODY}" | jq -r '(.promotion_targets // [] | .[0].environment_id // empty) // .environment_id // empty')"
+          TARGET_0_TYPE="$(printf '%s' "${RESPONSE_BODY}" | jq -r '(.promotion_targets // [] | .[0].environment_type // empty) // ""')"
 
           if [ -z "${TARGET_0_ID}" ]; then
-            # Defensive fallback: if promotion_targets isn't present/parseable, default to environment_id.
-            TARGET_0_ID="$(printf '%s' "${RESPONSE_BODY}" | jq -r '.environment_id // empty')"
-          fi
-          if [ -z "${TARGET_0_ID}" ]; then
-            echo "mz-control error: no eligible target environments for this repository/ref"
+            echo "mz-control error: no target environment for this repository/ref"
             exit 1
           fi
 
@@ -227,22 +201,14 @@ jobs:
               non-production) printf '%s' "development" ;;
               performance) printf '%s' "staging" ;;
               production) printf '%s' "production" ;;
-              *) printf '%s' "promotion" ;;
+              *) printf '%s' "development" ;;
             esac
           }
           TARGET_0_ENV="$(to_github_env "${TARGET_0_TYPE}")"
-          TARGET_1_ENV="$(to_github_env "${TARGET_1_TYPE}")"
-          TARGET_2_ENV="$(to_github_env "${TARGET_2_TYPE}")"
 
           echo "target_0_id=${TARGET_0_ID}" >> "${GITHUB_OUTPUT}"
           echo "target_0_type=${TARGET_0_TYPE}" >> "${GITHUB_OUTPUT}"
           echo "target_0_env=${TARGET_0_ENV}" >> "${GITHUB_OUTPUT}"
-          echo "target_1_id=${TARGET_1_ID}" >> "${GITHUB_OUTPUT}"
-          echo "target_1_type=${TARGET_1_TYPE}" >> "${GITHUB_OUTPUT}"
-          echo "target_1_env=${TARGET_1_ENV}" >> "${GITHUB_OUTPUT}"
-          echo "target_2_id=${TARGET_2_ID}" >> "${GITHUB_OUTPUT}"
-          echo "target_2_type=${TARGET_2_TYPE}" >> "${GITHUB_OUTPUT}"
-          echo "target_2_env=${TARGET_2_ENV}" >> "${GITHUB_OUTPUT}"
         env:
           MZ_CONTROL_URL: ${{ inputs.mz_control_url }}
           TARGET_ENVIRONMENT_ID: ${{ inputs.target_environment_id }}
@@ -250,22 +216,13 @@ jobs:
 
       - name: Summary
         run: |
-          echo "### Eligible environments" >> "${GITHUB_STEP_SUMMARY}"
+          echo "### Build & Deploy" >> "${GITHUB_STEP_SUMMARY}"
           echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "| Order | Env | Environment ID | Type | Name | Hostname |" >> "${GITHUB_STEP_SUMMARY}"
-          echo "|---:|---|---:|---|---|---|" >> "${GITHUB_STEP_SUMMARY}"
-          echo "${PROMOTION_TARGETS_JSON}" | jq -r 'to_entries[] | "| " + ((.key + 1) | tostring) + " | " + ( .value.environment_type // "" | ascii_downcase | (if . == "non-production" then "development" elif . == "performance" then "staging" elif . == "production" then "production" else . end) ) + " | " + ((.value.environment_id // "")|tostring) + " | " + ((.value.environment_type // "")|tostring) + " | " + ((.value.name // "")|tostring) + " | " + ((.value.hostname // "")|tostring) + " |"' >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Auto deploy targets the first environment above." >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "This build run id (for promotions): ${GITHUB_RUN_ID}" >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Same-run promotions are disabled by default (input: \`enable_promotions\`)." >> "${GITHUB_STEP_SUMMARY}"
-          echo "If you enable promotions, you should gate them using environment approvals (GitHub Enterprise for private repos)." >> "${GITHUB_STEP_SUMMARY}"
-          echo "" >> "${GITHUB_STEP_SUMMARY}"
-          echo "Build API URL: ${{ steps.creds.outputs.build_api_url }}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Target environment: \`${TARGET_0_ID}\` (\`${TARGET_0_TYPE}\`)" >> "${GITHUB_STEP_SUMMARY}"
+          echo "- Build API URL: ${{ steps.creds.outputs.build_api_url }}" >> "${GITHUB_STEP_SUMMARY}"
         env:
-          PROMOTION_TARGETS_JSON: ${{ steps.creds.outputs.promotion_targets_json }}
+          TARGET_0_ID: ${{ steps.creds.outputs.target_0_id }}
+          TARGET_0_TYPE: ${{ steps.creds.outputs.target_0_type }}
 
   create_build:
     name: Create Build
@@ -1644,15 +1601,6 @@ jobs:
           ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
           UPLOAD_URL: ${{ steps.presign_primary.outputs.upload_url }}
 
-      - name: Upload artifact to GitHub
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: magezero-build-${{ github.run_id }}
-          path: ${{ env.ARTIFACT_PATH }}
-          if-no-files-found: error
-          retention-days: 3
-
   deploy_auto:
     name: Build/Deploy (${{ needs.prepare.outputs.target_0_env }})
     runs-on: ubuntu-latest
@@ -1678,60 +1626,4 @@ jobs:
           DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
           OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
           TARGET_ENV_ID: ${{ needs.prepare.outputs.target_0_id }}
-          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
-
-  promote_1:
-    name: Build/Deploy (${{ needs.prepare.outputs.target_1_env }})
-    runs-on: ubuntu-latest
-    needs: [prepare, create_build, deploy_auto]
-    if: ${{ inputs.enable_promotions && needs.prepare.outputs.target_1_id != '' }}
-    environment: ${{ needs.prepare.outputs.target_1_env }}
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Trigger deployment
-        run: |
-          if [ -n "${DEPLOY_BEARER_TOKEN}" ]; then
-            TOKEN="${DEPLOY_BEARER_TOKEN}"
-          else
-            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          fi
-          curl -fsS -X POST "${DEPLOY_URL}" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"artifact\":\"${OBJECT_KEY}\",\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID}}"
-        env:
-          DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
-          OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
-          TARGET_ENV_ID: ${{ needs.prepare.outputs.target_1_id }}
-          DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
-
-  promote_2:
-    name: Build/Deploy (${{ needs.prepare.outputs.target_2_env }})
-    runs-on: ubuntu-latest
-    needs: [prepare, create_build, promote_1]
-    if: ${{ inputs.enable_promotions && needs.prepare.outputs.target_2_id != '' }}
-    environment: ${{ needs.prepare.outputs.target_2_env }}
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - name: Trigger deployment
-        run: |
-          if [ -n "${DEPLOY_BEARER_TOKEN}" ]; then
-            TOKEN="${DEPLOY_BEARER_TOKEN}"
-          else
-            TOKEN="$(curl -fsS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=mz-control" \
-              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" | jq -r '.value')"
-          fi
-          curl -fsS -X POST "${DEPLOY_URL}" \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"artifact\":\"${OBJECT_KEY}\",\"repository\":\"${GITHUB_REPOSITORY}\",\"ref\":\"${GITHUB_REF}\",\"environment_id\":${TARGET_ENV_ID}}"
-        env:
-          DEPLOY_URL: ${{ needs.prepare.outputs.deploy_url }}
-          OBJECT_KEY: ${{ needs.prepare.outputs.object_key }}
-          TARGET_ENV_ID: ${{ needs.prepare.outputs.target_2_id }}
           DEPLOY_BEARER_TOKEN: ${{ secrets.DEPLOY_BEARER_TOKEN }}
